@@ -22,7 +22,8 @@ data/raw/*.tiff
 
 # Derived outputs: regenerate with features.py / triage.py
 data/processed/*.csv
-output/
+output/*
+!output/.gitkeep
 
 # Tracked on purpose (small, and they are the provenance + ground truth):
 #   data/raw/metadata.csv        - article ID -> filename mapping
