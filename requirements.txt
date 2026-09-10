@@ -1,0 +1,8 @@
+opencv-python
+scikit-image
+scikit-learn
+numpy
+pandas
+matplotlib
+requests
+tqdm

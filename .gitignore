@@ -1,0 +1,30 @@
+# Virtual environment
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# --- Data ---------------------------------------------------------------
+# Downloaded slide images: ~2 MB each and the full CRIC collection is 400
+# of them (~800 MB). Regenerate with: python src/download_data.py
+data/raw/*.png
+data/raw/*.jpg
+data/raw/*.jpeg
+data/raw/*.tif
+data/raw/*.tiff
+
+# Derived outputs: regenerate with features.py / triage.py
+data/processed/*.csv
+output/
+
+# Tracked on purpose (small, and they are the provenance + ground truth):
+#   data/raw/metadata.csv        - article ID -> filename mapping
+#   data/raw/classifications.csv - Bethesda labels + nucleus coordinates
+#   data/raw/README.md           - dataset field documentation
