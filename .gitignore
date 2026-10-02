@@ -7,6 +7,11 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .ipynb_checkpoints/
+*.pyc
+.venv/
+venv/
+.DS_Store
+data/
 
 # macOS
 .DS_Store

@@ -1,0 +1,11 @@
+# Clinical theme - colours mirror the palette in src/theme.py.
+[theme]
+base = "light"
+primaryColor = "#0d6a8a"
+backgroundColor = "#eaeef3"
+secondaryBackgroundColor = "#f6f8fa"
+textColor = "#132434"
+
+[client]
+# Hide the "Deploy" button and developer menu clutter from reviewers.
+toolbarMode = "minimal"

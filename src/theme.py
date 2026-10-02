@@ -1,0 +1,483 @@
+"""
+Visual layer for the Billeddiagnostik review interface.
+
+Design goal: a calm clinical workstation rather than a demo dashboard.
+Three principles drive everything here:
+
+1. The specimen is the only saturated thing on screen. Cytology stains are
+   pink/purple; the interface is built from desaturated cool greys so it never
+   competes with - or shifts the perception of - the material being reviewed.
+2. The screen is a fixed budget. A pathologist should reach a verdict without
+   scrolling, so vertical space is spent deliberately: images are capped in
+   viewport-relative height, and numbers are shown as compact label/value rows
+   instead of Streamlit's very tall default metrics.
+3. Status is carried by colour *and* text, never colour alone.
+
+Everything is plain CSS injected once per run, so the app keeps working
+exactly as before if this module is removed.
+"""
+
+import re
+
+import streamlit as st
+
+# --- Clinical palette --------------------------------------------------------
+# Cool, low-chroma neutrals. The single accent is an instrument teal-blue.
+INK = "#132434"          # primary text
+INK_SOFT = "#5c6f80"     # secondary text
+LINE = "#d5dde5"         # hairlines and card borders
+SURFACE = "#ffffff"      # cards
+GROUND = "#eaeef3"       # app background
+ACCENT = "#0d6a8a"       # navigation, focus, links
+
+# Verdict colours: distinct in hue *and* lightness so they survive the
+# red-green colour vision deficiency that ~8% of male clinicians have.
+OK = "#1a7f4b"           # egnet
+WARN = "#a86a08"         # suboptimal
+BAD = "#b8372b"          # uegnet
+NEUTRAL = "#7b8a99"      # not yet assessed
+
+VERDICT_COLORS = {
+    "egnet": OK,
+    "suboptimal": WARN,
+    "uegnet": BAD,
+}
+
+FONT_STACK = (
+    'system-ui, -apple-system, "Segoe UI", "Source Sans", '
+    "Roboto, Helvetica, Arial, sans-serif"
+)
+
+CSS = f"""
+<style>
+:root {{
+  --ink: {INK};
+  --ink-soft: {INK_SOFT};
+  --line: {LINE};
+  --surface: {SURFACE};
+  --ground: {GROUND};
+  --accent: {ACCENT};
+  --ok: {OK};
+  --warn: {WARN};
+  --bad: {BAD};
+  --neutral: {NEUTRAL};
+  /* Height budget for the main specimen image: the viewport minus the top
+     bar, the collapsed table expanders and padding. The image grows on a large
+     reporting monitor and shrinks on a laptop, but never pushes the page into
+     scrolling. */
+  --img-h: calc(100vh - 265px);
+  --img-h-inset: 21vh;   /* the zoomed crop in the right-hand rail */
+}}
+
+html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
+  font-family: {FONT_STACK};
+  color: var(--ink);
+}}
+[data-testid="stApp"] {{ background: var(--ground); }}
+
+/* --- Reclaim vertical space -------------------------------------------------
+   Streamlit ships 96px of top and 160px of bottom padding. On a 900px laptop
+   screen that is over a quarter of the usable height spent on nothing. */
+[data-testid="stMainBlockContainer"] {{
+  padding-top: 1.1rem;
+  padding-bottom: 1.6rem;
+  padding-left: 1.8rem;
+  padding-right: 1.8rem;
+  max-width: 1800px;
+}}
+[data-testid="stHeader"] {{ background: transparent; height: 0; }}
+/* Streamlit gives markdown blocks a -1rem bottom margin to cancel paragraph
+   spacing. Our HTML blocks carry their own spacing, so that negative margin
+   made headings and cards slide underneath the next control. */
+[data-testid="stMarkdownContainer"] {{ margin-bottom: 0 !important; }}
+[data-testid="stMarkdownContainer"] > p:last-child {{ margin-bottom: 0; }}
+[data-testid="stMain"] .stElementContainer {{ margin-bottom: 0; }}
+[data-testid="stVerticalBlock"] {{ gap: 0.55rem; }}
+[data-testid="stMain"] [data-testid="stHorizontalBlock"] {{ gap: 1rem; }}
+
+/* --- Top bar ---------------------------------------------------------------
+   Replaces the oversized page title. Carries the identifiers a reviewer needs
+   to stay oriented: which view, which sample, how far through the series. */
+.bd-topbar {{
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.55rem 1.1rem;
+  padding: 0.3rem 0 0.7rem 0;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 0.85rem;
+}}
+.bd-topbar .t-title {{
+  font-size: 1.12rem; font-weight: 650; letter-spacing: -0.01em;
+  color: var(--ink); margin-right: 0.2rem;
+}}
+.bd-topbar .t-sub {{ font-size: 0.82rem; color: var(--ink-soft); }}
+.bd-topbar .t-right {{ margin-left: auto; display: flex; align-items: baseline; gap: 1.1rem; }}
+.bd-topbar .t-id {{
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 0.78rem; color: var(--ink-soft);
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 3px; padding: 0.16rem 0.45rem;
+}}
+.bd-topbar .t-count {{
+  font-size: 0.8rem; color: var(--ink-soft); font-variant-numeric: tabular-nums;
+}}
+
+/* --- Cards ----------------------------------------------------------------- */
+.bd-card {{
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.55rem;
+}}
+/* Qualified with p so Streamlit's own paragraph styles don't win. */
+.bd-h, [data-testid="stMarkdownContainer"] p.bd-h {{
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--ink-soft);
+  margin: 0 0 0.45rem 0;
+}}
+
+/* --- Verdict display --------------------------------------------------------
+   Auto and human verdict sit side by side: the comparison is the point of
+   Case 2, so it should be one glance, not two. */
+.bd-verdicts {{ display: flex; gap: 0.5rem; }}
+.bd-verdicts > div {{ flex: 1; min-width: 0; }}
+.bd-vlabel {{
+  font-size: 0.66rem; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--ink-soft); margin-bottom: 0.2rem;
+}}
+.bd-chip {{
+  display: block; text-align: center;
+  font-size: 0.95rem; font-weight: 650; letter-spacing: -0.01em;
+  padding: 0.34rem 0.4rem; border-radius: 4px;
+  color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}}
+.bd-chip.egnet {{ background: var(--ok); }}
+.bd-chip.suboptimal {{ background: var(--warn); }}
+.bd-chip.uegnet {{ background: var(--bad); }}
+.bd-chip.tom {{
+  background: transparent; color: var(--neutral);
+  border: 1px dashed var(--neutral); font-weight: 550;
+}}
+.bd-agree {{
+  font-size: 0.72rem; margin-top: 0.35rem; color: var(--ink-soft);
+  display: flex; align-items: center; gap: 0.3rem;
+}}
+.bd-agree b {{ font-weight: 650; }}
+.bd-agree.enig b {{ color: var(--ok); }}
+.bd-agree.uenig b {{ color: var(--bad); }}
+
+/* --- Compact statistics -----------------------------------------------------
+   st.metric renders a ~90px tall block per number. Five of those pushed the
+   verdict buttons off screen entirely; these rows are ~24px each. */
+.bd-stats {{ display: flex; flex-direction: column; }}
+.bd-stat {{
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 0.6rem; padding: 0.2rem 0;
+  border-bottom: 1px solid #eef2f6;
+  font-size: 0.84rem;
+}}
+.bd-stat:last-child {{ border-bottom: 0; }}
+.bd-stat .k {{ color: var(--ink-soft); }}
+.bd-stat .v {{
+  font-weight: 650; font-variant-numeric: tabular-nums;
+  color: var(--ink); white-space: nowrap;
+}}
+.bd-stat.lead {{ font-size: 0.98rem; padding: 0.1rem 0 0.3rem 0; }}
+.bd-stat.lead .v {{ font-size: 1.15rem; font-weight: 700; }}
+.bd-stat .v.warn {{ color: var(--warn); }}
+.bd-stat .v.bad {{ color: var(--bad); }}
+
+/* --- Images ----------------------------------------------------------------
+   Cap height rather than width: a 1376x1020 specimen at full column width is
+   taller than the screen. */
+[data-testid="stMain"] [data-testid="stImage"] img {{
+  max-height: var(--img-h);
+  width: auto !important;
+  max-width: 100%;
+  display: block; margin: 0 auto;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}}
+[data-testid="stMain"] [data-testid="stImageContainer"],
+[data-testid="stMain"] [data-testid="stFullScreenFrame"] > div {{
+  display: flex; justify-content: center;
+}}
+/* The inset crop in the right rail gets a much smaller budget. */
+.st-key-bd_inset [data-testid="stImage"] img {{
+  max-height: var(--img-h-inset);
+  border-color: #c8d2dc;
+}}
+[data-testid="stImageCaption"] {{
+  font-size: 0.72rem; color: var(--ink-soft); padding-top: 0.25rem;
+}}
+
+/* --- Sidebar ---------------------------------------------------------------- */
+.bd-brand {{
+  font-size: 0.98rem; font-weight: 700; letter-spacing: -0.01em; color: var(--ink);
+  padding: 0 0 0.55rem 0; border-bottom: 1px solid var(--line); margin-bottom: 0.3rem;
+}}
+.bd-brand span {{
+  display: block; font-size: 0.72rem; font-weight: 500; letter-spacing: 0.02em;
+  color: var(--ink-soft); margin-top: 0.1rem;
+}}
+.bd-hint {{ font-size: 0.8rem; color: var(--ink-soft); line-height: 1.4; }}
+[data-testid="stSidebar"] {{
+  background: #f6f8fa;
+  border-right: 1px solid var(--line);
+}}
+[data-testid="stSidebarUserContent"] {{ padding: 1rem 1rem 2rem 1rem; }}
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{ gap: 0.4rem; }}
+[data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {{
+  font-size: 0.7rem !important; font-weight: 700 !important;
+  letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--ink-soft) !important;
+  padding: 0.55rem 0 0.1rem 0 !important; margin: 0 !important;
+}}
+[data-testid="stSidebar"] hr {{ margin: 0.5rem 0; border-color: var(--line); }}
+
+/* Primary case navigation - deliberately the largest text in the sidebar,
+   because it is the one control that changes what the whole screen means. */
+.st-key-case [data-testid="stWidgetLabel"] {{ display: none; }}
+.st-key-case, .st-key-case [data-testid="stRadio"],
+.st-key-case [role="radiogroup"] {{ width: 100% !important; }}
+.st-key-case [role="radiogroup"] {{ gap: 0.15rem; }}
+.st-key-case [role="radiogroup"] > label {{
+  padding: 0.4rem 0.5rem; border-radius: 4px; width: 100%;
+  border: 1px solid transparent;
+}}
+.st-key-case [role="radiogroup"] > label:hover {{ background: #e9eff4; }}
+.st-key-case label p {{
+  font-size: 1.14rem !important;
+  font-weight: 650 !important;
+  color: var(--ink) !important;
+  letter-spacing: -0.01em;
+}}
+.st-key-case [role="radiogroup"] > label:has(input:checked) {{
+  background: #e3edf2; border-color: #bcd4de;
+}}
+.st-key-case [role="radiogroup"] > label:has(input:checked) p {{ color: var(--accent) !important; }}
+
+/* Sub-view switch reads as a segmented control under the case. */
+[class*="st-key-sub_"] [data-testid="stWidgetLabel"] {{ display: none; }}
+[class*="st-key-sub_"] label p {{ font-size: 0.9rem !important; font-weight: 550 !important; }}
+
+.bd-side-note {{
+  font-size: 0.78rem; line-height: 1.35; color: var(--ink-soft);
+  padding: 0.1rem 0 0.5rem 0;
+}}
+.bd-side-note em {{ color: var(--ink); font-style: italic; }}
+
+/* Legend: fixed-width swatches so the rows align into a column. */
+.bd-legend {{ font-size: 0.78rem; line-height: 1.5; color: var(--ink-soft); }}
+.bd-legend .row {{ display: flex; align-items: flex-start; gap: 0.45rem; margin-bottom: 0.18rem; }}
+.bd-legend .sw {{
+  flex: 0 0 auto; width: 11px; height: 11px; border-radius: 2px;
+  margin-top: 0.28rem; border: 1px solid rgba(0,0,0,0.15);
+}}
+.bd-legend .sw.ring {{ background: transparent; border-width: 2px; border-radius: 50%; }}
+.bd-legend b {{ color: var(--ink); font-weight: 600; }}
+/* Reason codes are drawn as the same red corner badges used on the image. */
+.bd-legend .code {{
+  flex: 0 0 auto; min-width: 15px; text-align: center;
+  font-size: 0.64rem; font-weight: 700; line-height: 1.45; color: #fff;
+  border-radius: 2px; padding: 0 0.2rem; margin-top: 0.08rem;
+}}
+
+/* Progress readout in the sidebar. */
+.bd-progress {{
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 4px; padding: 0.45rem 0.55rem; font-size: 0.8rem;
+}}
+.bd-progress .row {{ display: flex; justify-content: space-between; gap: 0.5rem; }}
+.bd-progress .v {{ font-weight: 650; font-variant-numeric: tabular-nums; }}
+.bd-bar {{
+  height: 4px; border-radius: 2px; background: #dde4ea;
+  margin-top: 0.35rem; overflow: hidden;
+}}
+.bd-bar > span {{ display: block; height: 100%; background: var(--accent); }}
+
+/* --- Widgets ---------------------------------------------------------------- */
+[data-testid="stMain"] .stButton button, [data-testid="stSidebar"] .stButton button {{
+  border-radius: 4px; border: 1px solid var(--line);
+  font-weight: 550; font-size: 0.84rem;
+  padding: 0.28rem 0.6rem; min-height: 0; color: var(--ink);
+  background: var(--surface); transition: none;
+}}
+[data-testid="stMain"] .stButton button:hover, [data-testid="stSidebar"] .stButton button:hover {{
+  border-color: var(--accent); color: var(--accent); background: #f2f8fa;
+}}
+
+/* The three verdict buttons are the primary action of Case 2: colour-coded,
+   full width, and placed directly beneath the verdict they will change. */
+.st-key-bd_verdict_btns [data-testid="stHorizontalBlock"] {{ gap: 0.35rem; }}
+.st-key-bd_verdict_btns .stButton button {{
+  width: 100%; font-weight: 650; font-size: 0.86rem;
+  padding: 0.34rem 0.15rem; color: #fff;
+}}
+.st-key-bd_verdict_btns .stButton button p {{ font-size: inherit; white-space: nowrap; }}
+.st-key-label_egnet button {{ background: var(--ok) !important; border-color: var(--ok) !important; }}
+.st-key-label_suboptimal button {{ background: var(--warn) !important; border-color: var(--warn) !important; }}
+.st-key-label_uegnet button {{ background: var(--bad) !important; border-color: var(--bad) !important; }}
+.st-key-bd_verdict_btns .stButton button:hover {{ filter: brightness(1.1); color: #fff !important; }}
+.st-key-bd_verdict_btns .stButton button p {{ color: #fff !important; }}
+
+[data-testid="stExpander"] {{
+  border: 1px solid var(--line); border-radius: 5px; background: var(--surface);
+}}
+[data-testid="stExpander"] summary {{ font-size: 0.82rem; font-weight: 600; color: var(--ink-soft); }}
+[data-testid="stExpander"] summary:hover {{ color: var(--accent); }}
+
+[data-testid="stSidebar"] [data-testid="stAlertContainer"] {{
+  background: #eaf1f5; border: 1px solid #cfdde5; border-radius: 4px;
+  padding: 0.45rem 0.55rem; font-size: 0.76rem; color: var(--ink-soft);
+}}
+[data-testid="stSidebar"] [data-testid="stAlertContainer"] p {{ font-size: 0.76rem; }}
+
+[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] > div,
+[data-testid="stSidebar"] [data-baseweb="input"] {{
+  border-radius: 4px; border-color: var(--line); font-size: 0.84rem;
+}}
+[data-testid="stWidgetLabel"] p {{ font-size: 0.78rem; color: var(--ink-soft); }}
+[data-testid="stCaptionContainer"] p {{ font-size: 0.76rem; color: var(--ink-soft); }}
+
+[data-testid="stDataFrame"] {{ font-variant-numeric: tabular-nums; }}
+
+/* Overview grid: each thumbnail is a card whose left edge carries the verdict. */
+.bd-thumb-meta {{
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 0.4rem; font-size: 0.75rem; padding: 0.1rem 0 0.2rem 0;
+}}
+.bd-thumb-meta .pair {{ display: flex; align-items: center; gap: 0.3rem; }}
+.bd-thumb-meta .dot {{
+  width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
+  border: 1px solid rgba(0,0,0,0.12);
+}}
+.bd-thumb-meta .who {{ color: var(--ink-soft); }}
+.bd-thumb-meta .val {{ color: var(--ink); font-weight: 600; }}
+.bd-thumb-id {{
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.68rem; color: var(--neutral);
+  line-height: 1.4; padding-bottom: 0.25rem;
+}}
+.st-key-bd_overview [data-testid="stImage"] img {{ max-height: none; }}
+
+/* Saved-confirmation strip. */
+.bd-saved {{
+  background: #e7f3ec; border: 1px solid #b9dcc7; color: #14603a;
+  border-radius: 4px; padding: 0.3rem 0.5rem; font-size: 0.79rem;
+  margin-bottom: 0.45rem;
+}}
+</style>
+"""
+
+
+def inject() -> None:
+    """Apply the stylesheet. Safe to call on every rerun."""
+    st.markdown(CSS, unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------------------------
+# Small render helpers. Each returns nothing and writes one markdown block,
+# which keeps the DOM shallow and the vertical rhythm predictable.
+# ---------------------------------------------------------------------------
+
+def topbar(title: str, subtitle: str = "", sample_id: str = "", counter: str = "") -> None:
+    right = ""
+    if sample_id:
+        right += f'<span class="t-id">{sample_id}</span>'
+    if counter:
+        right += f'<span class="t-count">{counter}</span>'
+    st.markdown(
+        f'<div class="bd-topbar">'
+        f'<span class="t-title">{title}</span>'
+        f'<span class="t-sub">{subtitle}</span>'
+        f'<span class="t-right">{right}</span>'
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _stat_row(label: str, value: str, tone: str = "", lead: bool = False) -> str:
+    cls = "bd-stat lead" if lead else "bd-stat"
+    return f'<div class="{cls}"><span class="k">{label}</span><span class="v {tone}">{value}</span></div>'
+
+
+def stats_card(heading: str, rows: list) -> None:
+    """rows: list of (label, value) or (label, value, tone) or (label, value, tone, lead)."""
+    body = "".join(_stat_row(*r) for r in rows)
+    head = f'<p class="bd-h">{heading}</p>' if heading else ""
+    st.markdown(
+        f'<div class="bd-card">{head}<div class="bd-stats">{body}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def verdict_card(auto: str, human: str | None, agrees: bool | None, when: str = "") -> None:
+    """Auto verdict and the reviewer's verdict, side by side."""
+    auto_cls = auto if auto in VERDICT_COLORS else "tom"
+    if human:
+        human_html = f'<span class="bd-chip {human}">{human}</span>'
+    else:
+        human_html = '<span class="bd-chip tom">ikke vurderet</span>'
+
+    note = ""
+    if human:
+        word = "enig" if agrees else "uenig"
+        stamp = f" · {when[:16].replace('T', ' ')}" if when else ""
+        note = f'<div class="bd-agree {word}"><b>{word}</b> med auto{stamp}</div>'
+
+    st.markdown(
+        f'<div class="bd-card">'
+        f'<div class="bd-verdicts">'
+        f'<div><div class="bd-vlabel">Auto-vurdering</div>'
+        f'<span class="bd-chip {auto_cls}">{auto}</span></div>'
+        f'<div><div class="bd-vlabel">Din vurdering</div>{human_html}</div>'
+        f"</div>{note}</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def legend(title: str, items: list) -> None:
+    """items: list of (colour, marker, html_text). marker is False for a filled
+    swatch, True for a ring, or a short string such as "C" for a code badge."""
+    rows = ""
+    for color, marker, text in items:
+        if isinstance(marker, str):
+            mark = f'<span class="code" style="background:{color}">{marker}</span>'
+        elif marker:
+            mark = f'<span class="sw ring" style="border-color:{color}"></span>'
+        else:
+            mark = f'<span class="sw" style="background:{color}"></span>'
+        rows += f'<div class="row">{mark}<span>{text}</span></div>'
+    st.sidebar.markdown(
+        f'<p class="bd-h" style="margin-bottom:.3rem">{title}</p>'
+        f'<div class="bd-legend">{rows}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def side_heading(text: str) -> None:
+    st.sidebar.markdown(f'<p class="bd-h" style="margin:.5rem 0 0 0">{text}</p>', unsafe_allow_html=True)
+
+
+def side_note(text: str) -> None:
+    # Markdown isn't parsed inside raw HTML, so convert *emphasis* ourselves.
+    text = re.sub(r"\*(.+?)\*", r"<em>\1</em>", text)
+    st.sidebar.markdown(f'<div class="bd-side-note">{text}</div>', unsafe_allow_html=True)
+
+
+def progress_card(reviewed: int, total: int, agree: int | None = None) -> None:
+    pct = (reviewed / total * 100) if total else 0
+    agree_row = ""
+    if agree is not None and reviewed:
+        agree_row = (
+            f'<div class="row"><span>Enighed</span>'
+            f'<span class="v">{agree} / {reviewed}</span></div>'
+        )
+    st.sidebar.markdown(
+        f'<div class="bd-progress">'
+        f'<div class="row"><span>Vurderet</span><span class="v">{reviewed} / {total}</span></div>'
+        f'{agree_row}<div class="bd-bar"><span style="width:{pct:.0f}%"></span></div>'
+        f"</div>",
+        unsafe_allow_html=True,
+    )
