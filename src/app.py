@@ -1,27 +1,32 @@
 """
-Review interface for the Billeddiagnostik PoC - Case 1 and Case 2.
+Gennemgangs-app til Billeddiagnostik-PoC'en - Case 1 og Case 2.
  
-Case 1 - Lokalisering ("Scopio-light"): where is there something to look at?
-    Shows each image with a fine tile grid; background tiles are dimmed,
-    tiles with material are numbered in review order. Step through them
-    with a zoomed view.  Data: features_case1.csv + roi_results.csv (roi.py).
+Case 1 - Felter ("Scopio-light"): hvor er der noget at kigge på?
+    Viser hvert billede med et fint gitter; baggrundsfelter dæmpes, felter
+    med materiale nummereres i gennemgangsrækkefølge. Man kan klikke sig
+    igennem dem zoomet ind.  Data: features_case1.csv + roi_results.csv (roi.py).
  
-Case 1 - Kerner (nucleus view): the same question answered without a grid.
-    Detected nuclei are grouped into clusters, drawn as circles and numbered
-    in review order. Toggle between clusters and individual nuclei.
+Case 1 - Kerner: samme spørgsmål, men uden gitter.
+    Fundne kerner samles i klynger, tegnes som cirkler og nummereres i
+    gennemgangsrækkefølge. Man kan skifte mellem klynger og enkelte kerner.
     Data: nuclei.csv + clusters.csv (nuclei.py).
  
-Case 2 - Triagering: is the sample usable?
-    Shows the coarse tile grid with each tile's verdict (green = usable, red =
-    failed with reason C/B/D), the image-level triage, and lets you record a
-    human verdict. Each click is saved to manual_labels.csv (durable record)
-    and mirrored into triage_results.csv's 'human_eval' column.
+Case 2 - Triagering: er prøven brugbar?
+    Viser det grove gitter med hvert felts vurdering (grøn = brugbart, rød =
+    ikke brugbart med årsag C/B/D), billedets samlede triage, og lader en
+    gemme sin egen vurdering. Hvert klik gemmes i manual_labels.csv (den
+    varige log) og spejles i kolonnen 'human_eval' i triage_results.csv.
     Data: features.csv + triage_results.csv (features.py + triage.py).
  
-Run from the project root:
+Kør fra projektets rodmappe:
     streamlit run src/app.py
+ 
+Ved første opstart på Streamlit Cloud hentes billederne automatisk fra
+Figshare (se ensure_raw_data), da de fylder ~800 MB og ikke ligger på GitHub.
 """
  
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
  
@@ -29,13 +34,12 @@ import pandas as pd
 import streamlit as st
 from PIL import Image, ImageDraw
  
-# These imports work because Streamlit adds the script's own folder (src/)
-# to the import path when it runs the app.
+# Disse imports virker, fordi Streamlit lægger scriptets egen mappe (src/)
+# på import-stien, når appen køres.
 from roi import summarise_images
 from triage import attach_human_eval, classify_tiles
-import theme
  
-# --- Paths (relative to the project root, where you run `streamlit run`) -----
+# --- Stier (relative til projektets rodmappe, hvor `streamlit run` køres) ---
 RAW_DIR = Path("data/raw")
 CASE2_FEATURES = Path("data/processed/features.csv")
 CASE2_TRIAGE = Path("data/processed/triage_results.csv")
@@ -78,7 +82,7 @@ CASES = {
     ),
 }
  
-# Colours (RGB)
+# Farver (RGB)
 COLOR_USABLE = (0, 200, 0)
 COLOR_FAILED = (220, 40, 40)
 COLOR_ROI = (0, 200, 0)
@@ -89,7 +93,25 @@ COLOR_CLUSTER = (255, 140, 0)
  
  
 # ---------------------------------------------------------------------------
-# Shared helpers (no Streamlit inside - testable on their own)
+# Datahentning ved opstart
+# ---------------------------------------------------------------------------
+ 
+@st.cache_resource(show_spinner=False)
+def ensure_raw_data():
+    # Billederne fylder ca. 800 MB og ligger derfor ikke på GitHub.
+    # Når appen kører på Streamlit Cloud, henter vi dem fra Figshare
+    # første gang, så serveren har de samme billeder som lokalt.
+    # cache_resource sørger for, at det kun sker én gang per opstart.
+    if RAW_DIR.exists() and any(RAW_DIR.rglob("*.png")):
+        return
+    with st.spinner("Henter billeder fra Figshare – første opstart tager et par minutter..."):
+        # download_data.py ligger i samme mappe som denne fil (src/), så vi
+        # finder den derfra i stedet for at regne med, hvad arbejdsmappen er.
+        subprocess.run([sys.executable, str(Path(__file__).parent / "download_data.py")], check=True)
+ 
+ 
+# ---------------------------------------------------------------------------
+# Fælles hjælpefunktioner (ingen Streamlit indeni - kan testes for sig selv)
 # ---------------------------------------------------------------------------
  
 def check_bounds(df: pd.DataFrame, source: str) -> pd.DataFrame:
@@ -100,7 +122,7 @@ def check_bounds(df: pd.DataFrame, source: str) -> pd.DataFrame:
  
  
 def grid_info(tiles: pd.DataFrame) -> str:
-    """Human-readable description of the grid actually used, from the stored bounds."""
+    """Læsbar beskrivelse af det gitter, der faktisk er brugt, ud fra de gemte feltgrænser."""
     n_rows, n_cols = int(tiles["row"].max()) + 1, int(tiles["col"].max()) + 1
     w = int((tiles["x1"] - tiles["x0"]).median())
     h = int((tiles["y1"] - tiles["y0"]).median())
@@ -117,7 +139,7 @@ def assert_tiles_span_image(tiles: pd.DataFrame, image: Image.Image) -> None:
     )
  
  
-# ---- Case 2 data ------------------------------------------------------------
+# ---- Case 2 - data ----------------------------------------------------------
  
 def load_case2():
     tiles = classify_tiles(check_bounds(pd.read_csv(CASE2_FEATURES), "features.csv"))
@@ -132,7 +154,7 @@ def load_manual_labels() -> pd.DataFrame:
  
  
 def save_manual_label(image_name: str, label: str) -> None:
-    """Upsert into manual_labels.csv, then refresh human_eval columns in triage_results.csv."""
+    """Opdatér/indsæt i manual_labels.csv og genopfrisk human_eval-kolonnerne i triage_results.csv."""
     labels = load_manual_labels()
     labels = labels[labels["image"] != image_name]
     new_row = pd.DataFrame(
@@ -147,7 +169,7 @@ def save_manual_label(image_name: str, label: str) -> None:
  
  
 def draw_triage_overlay(image: Image.Image, tiles: pd.DataFrame) -> Image.Image:
-    """Case 2: green = usable, red = failed with the failed checks (C/B/D) in the corner."""
+    """Case 2: grøn = brugbart, rød = ikke brugbart, med de fejlede tjek (C/B/D) i hjørnet."""
     assert_tiles_span_image(tiles, image)
     overlay = image.copy()
     draw = ImageDraw.Draw(overlay)
@@ -162,7 +184,7 @@ def draw_triage_overlay(image: Image.Image, tiles: pd.DataFrame) -> Image.Image:
     return overlay
  
  
-# ---- Case 1 data ------------------------------------------------------------
+# ---- Case 1 - felter --------------------------------------------------------
  
 def load_case1() -> pd.DataFrame:
     return check_bounds(pd.read_csv(CASE1_ROI), "roi_results.csv")
@@ -170,8 +192,8 @@ def load_case1() -> pd.DataFrame:
  
 def draw_roi_overlay(image: Image.Image, tiles: pd.DataFrame, current_rank=None) -> Image.Image:
     """
-    Case 1: background tiles dimmed, ROI tiles outlined (green = in focus,
-    orange = blurry) with their review rank; the current tile in yellow.
+    Case 1: baggrundsfelter dæmpes, ROI-felter indrammes (grøn = i fokus,
+    orange = uskarpt) med deres rækkefølge; det aktuelle felt i gult.
     """
     assert_tiles_span_image(tiles, image)
     base = image.convert("RGBA")
@@ -198,7 +220,7 @@ def draw_roi_overlay(image: Image.Image, tiles: pd.DataFrame, current_rank=None)
  
  
 def crop_tile(image: Image.Image, tile: pd.Series, margin: int = 24, scale: int = 3) -> Image.Image:
-    """Zoomed view of one tile with a little context around it."""
+    """Zoomet visning af ét felt med lidt kontekst omkring."""
     x0 = max(0, int(tile["x0"]) - margin)
     y0 = max(0, int(tile["y0"]) - margin)
     x1 = min(image.width, int(tile["x1"]) + margin)
@@ -207,7 +229,7 @@ def crop_tile(image: Image.Image, tile: pd.Series, margin: int = 24, scale: int 
     return crop.resize((crop.width * scale, crop.height * scale), Image.NEAREST)
  
  
-# ---- Case 1 (nuclei) data ------------------------------------------------
+# ---- Case 1 - kerner --------------------------------------------------------
  
 def load_case1_nuclei():
     return pd.read_csv(CASE1_NUCLEI), pd.read_csv(CASE1_CLUSTERS)
@@ -215,7 +237,7 @@ def load_case1_nuclei():
  
 def draw_nuclei_overlay(image: Image.Image, nuclei: pd.DataFrame, clusters: pd.DataFrame,
                         show_clusters: bool, show_nuclei: bool, current_rank=None) -> Image.Image:
-    """Circles around clusters (numbered by review order) and/or around individual nuclei."""
+    """Cirkler om klynger (nummereret efter rækkefølge) og/eller om enkelte kerner."""
     out = image.copy()
     draw = ImageDraw.Draw(out)
     if show_nuclei:
@@ -245,153 +267,124 @@ def crop_circle(image: Image.Image, cx: float, cy: float, radius: float, margin:
  
  
 # ---------------------------------------------------------------------------
-# UI pieces
+# UI-dele
 # ---------------------------------------------------------------------------
-
-def rgb(color: tuple) -> str:
-    return "rgb({},{},{})".format(*color)
-
-
+ 
 def pick_image(image_names: list, key: str) -> str:
-    """Sidebar prev/select/next navigation; remembers position per case.
-    The selectbox's session-state entry is the single source of truth, so
-    prev/next and jumps just set it before the widget is drawn."""
+    """Forrige/vælg/næste-navigation i sidepanelet; husker positionen pr. case.
+    Selectboxens session-state er den eneste sandhed, så forrige/næste og
+    spring sætter bare den, før widgetten tegnes."""
     sel_key = f"{key}_select"
     if st.session_state.get(sel_key) not in image_names:
         st.session_state[sel_key] = image_names[0]
-    jump = st.session_state.pop(f"{key}_jump_to", None)  # e.g. 'Åbn' in the overview
+    jump = st.session_state.pop(f"{key}_jump_to", None)  # fx 'Åbn' i oversigten
     if jump in image_names:
         st.session_state[sel_key] = jump
-
+ 
     idx = image_names.index(st.session_state[sel_key])
     col_prev, col_select, col_next = st.sidebar.columns([1, 3, 1])
     if col_prev.button("◀", key=f"{key}_prev"):
         st.session_state[sel_key] = image_names[max(0, idx - 1)]
     if col_next.button("▶", key=f"{key}_next"):
         st.session_state[sel_key] = image_names[min(len(image_names) - 1, idx + 1)]
-    return col_select.selectbox("Image", image_names, key=sel_key, label_visibility="collapsed")
-
-
-def position(image_names: list, image_name: str) -> str:
-    return f"Billede {image_names.index(image_name) + 1} / {len(image_names)}"
-
-
-def sample_id(image_name: str) -> str:
-    return Path(image_name).stem
-
-
-def step_controls(step_key: str, n_items: int, key: str, noun: str) -> int:
-    """◀ Oversigt ▶ stepping through items in priority order (0 = overview)."""
-    if step_key not in st.session_state:
-        st.session_state[step_key] = 0
-    c_prev, c_overview, c_next = st.sidebar.columns([1, 2, 1])
-    if c_prev.button("◀", key=f"{key}_prev{noun}", width="stretch"):
-        st.session_state[step_key] = max(1, st.session_state[step_key] - 1) if n_items else 0
-    if c_overview.button("Oversigt", key=f"{key}_overview", width="stretch"):
-        st.session_state[step_key] = 0
-    if c_next.button("▶", key=f"{key}_next{noun}", width="stretch"):
-        st.session_state[step_key] = min(n_items, st.session_state[step_key] + 1)
-    current = st.session_state[step_key]
-    st.sidebar.caption(f"{noun.capitalize()} {current} / {n_items}" if current
-                       else f"{n_items} {noun}er at gennemgå · tryk ▶ for at starte")
-    return current
-
-
-def load_image_or_stop(image_name: str) -> Image.Image:
-    image_path = RAW_DIR / image_name
-    if not image_path.exists():
-        st.error(f"Image file not found: {image_path}")
-        st.stop()
-    return Image.open(image_path).convert("RGB")
-
-
-def hint(text: str) -> None:
-    st.markdown(f'<div class="bd-card bd-hint">{text}</div>', unsafe_allow_html=True)
-
-
+    chosen = col_select.selectbox("Image", image_names, key=sel_key, label_visibility="collapsed")
+    st.sidebar.caption(f"Billede {image_names.index(chosen) + 1} / {len(image_names)}")
+    return chosen
+ 
+ 
 def render_case1():
     if not CASE1_ROI.exists():
         st.error("roi_results.csv not found. Run:\n"
                  "  python3 src/features.py --tile-size 128 --output data/processed/features_case1.csv\n"
                  "  python3 src/roi.py")
         st.stop()
-
+ 
     tiles_df = load_case1()
     summary = summarise_images(tiles_df).set_index("image")
-
-    theme.side_heading("Billede")
-    image_names = sorted(tiles_df["image"].unique().tolist())
-    image_name = pick_image(image_names, key="c1")
+    st.sidebar.info(grid_info(tiles_df))
+ 
+    st.sidebar.header("Billede")
+    image_name = pick_image(sorted(tiles_df["image"].unique().tolist()), key="c1")
     image_tiles = tiles_df[tiles_df["image"] == image_name]
     roi_tiles = image_tiles[image_tiles["is_roi"]].sort_values("priority_rank")
     n_roi = len(roi_tiles)
-
-    theme.side_heading("Gennemgang")
-    current = step_controls(f"c1_step_{image_name}", n_roi, key="c1", noun="felt")
-
-    theme.legend("Forklaring", [
-        (rgb(COLOR_ROI), False, "<b>Materiale</b>, i fokus"),
-        (rgb(COLOR_ROI_BLURRY), False, "<b>Materiale</b>, uskarpt · gennemgås sidst"),
-        ("rgb(70,70,70)", False, "<b>Baggrund</b> · kan springes over"),
-        (rgb(COLOR_CURRENT), False, "<b>Aktuelt felt</b> · tal = rækkefølge"),
-    ])
-    st.sidebar.info(grid_info(tiles_df))
-
-    image = load_image_or_stop(image_name)
-    theme.topbar("Case 1 · Felter", "Hvor er der noget at kigge på?",
-                 sample_id(image_name), position(image_names, image_name))
-
-    col_image, col_info = st.columns([3, 1.1])
+ 
+    # Klik igennem ROI-felter i prioriteret rækkefølge (0 = oversigt, intet felt valgt)
+    step_key = f"c1_step_{image_name}"
+    if step_key not in st.session_state:
+        st.session_state[step_key] = 0
+    st.sidebar.markdown("---")
+    st.sidebar.header("Gennemgang")
+    c_a, c_b, c_c = st.sidebar.columns(3)
+    if c_a.button("Oversigt", key="c1_overview"):
+        st.session_state[step_key] = 0
+    if c_b.button("◀ Forrige", key="c1_prevroi"):
+        st.session_state[step_key] = max(1, st.session_state[step_key] - 1) if n_roi else 0
+    if c_c.button("Næste ▶", key="c1_nextroi"):
+        st.session_state[step_key] = min(n_roi, st.session_state[step_key] + 1)
+    current = st.session_state[step_key]
+    st.sidebar.caption(f"Felt {current} / {n_roi}" if current else f"{n_roi} felter at gennemgå")
+ 
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(
+        "**Forklaring**  \n"
+        "🟩 grøn = materiale, i fokus  \n"
+        "🟧 orange = materiale, uskarpt (gennemgås sidst)  \n"
+        "⬛ mørk = baggrund, kan springes over  \n"
+        "Tal = gennemgangsrækkefølge"
+    )
+ 
+    image_path = RAW_DIR / image_name
+    if not image_path.exists():
+        st.error(f"Image file not found: {image_path}")
+        st.stop()
+    image = Image.open(image_path).convert("RGB")
+ 
+    col_image, col_info = st.columns([3, 1])
     with col_image:
-        st.image(draw_roi_overlay(image, image_tiles, current_rank=current or None), width="stretch")
-
+        st.image(draw_roi_overlay(image, image_tiles, current_rank=current or None),
+                 caption=image_name, width="stretch")
+ 
     with col_info:
         s = summary.loc[image_name]
-        theme.stats_card("Billedet", [
-            ("Felter med materiale", f"{int(s['roi_tiles'])} / {int(s['total_tiles'])}", "", True),
-            ("Andel af billedet", f"{s['pct_roi_area']:.0%}"),
-            ("Heraf i fokus", f"{int(s['roi_in_focus'])} / {int(s['roi_tiles'])}"),
-        ])
-
+        st.subheader("Oversigt")
+        st.metric("Felter med materiale", f"{int(s['roi_tiles'])} / {int(s['total_tiles'])}")
+        st.metric("Andel af billedet", f"{s['pct_roi_area']:.0%}")
+        st.metric("Heraf i fokus", f"{int(s['roi_in_focus'])} / {int(s['roi_tiles'])}")
+ 
         if current:
             t = roi_tiles.iloc[current - 1]
-            focus = f"{t['blur_score']:.1f}" + ("" if t["in_focus"] else " · uskarpt")
-            theme.stats_card(f"Felt #{current} af {n_roi}", [
-                ("Cellularitet", f"{t['cellularity']:.3f}"),
-                ("Fokus", focus, "" if t["in_focus"] else "warn"),
-                ("Position", f"række {int(t['row'])}, kol. {int(t['col'])}"),
-            ])
-            with st.container(key="bd_inset"):
-                st.image(crop_tile(image, t), width="stretch")
-            st.caption(f"px {int(t['x0'])}–{int(t['x1'])} × {int(t['y0'])}–{int(t['y1'])}")
-        else:
-            hint("Tryk <b>▶</b> i sidepanelet for at gå felterne igennem i prioriteret "
-                 "rækkefølge. Det aktuelle felt vises forstørret her.")
-
+            st.markdown("---")
+            st.subheader(f"Felt #{current}")
+            st.image(crop_tile(image, t), width="stretch")
+            st.metric("Cellularitet", f"{t['cellularity']:.3f}")
+            st.metric("Fokus", f"{t['blur_score']:.1f}" + ("" if t["in_focus"] else "  ⚠ uskarpt"))
+            st.caption(f"Række {int(t['row'])}, kolonne {int(t['col'])} · px {int(t['x0'])}-{int(t['x1'])}, {int(t['y0'])}-{int(t['y1'])}")
+ 
     with st.expander("Alle felter"):
         st.dataframe(
             image_tiles[["priority_rank", "row", "col", "cellularity", "blur_score", "is_roi", "in_focus"]]
             .sort_values(["row", "col"]).reset_index(drop=True),
             width="stretch",
         )
-
-
+ 
+ 
 def render_case1_nuclei():
     if not CASE1_NUCLEI.exists() or not CASE1_CLUSTERS.exists():
         st.error("nuclei.csv / clusters.csv not found. Run:\n  python3 src/nuclei.py")
         st.stop()
-
+ 
     nuclei_df, clusters_df = load_case1_nuclei()
-
-    theme.side_heading("Visning")
-    mode = st.sidebar.radio("Vis", ["Klynger", "Enkelte kerner", "Begge"], index=0,
-                            horizontal=True, label_visibility="collapsed")
+    st.sidebar.info("Kerner = mørke, farvede, runde objekter · klynge = kerner < 60 px fra hinanden")
+ 
+    st.sidebar.header("Visning")
+    mode = st.sidebar.radio("Vis", ["Klynger", "Enkelte kerner", "Begge"], index=0, label_visibility="collapsed")
     show_clusters = mode in ("Klynger", "Begge")
     show_nuclei = mode in ("Enkelte kerner", "Begge")
     min_size = st.sidebar.slider("Vis klynger med mindst … kerner", 1, 10, 1,
                                  help="Skjuler små klynger, så et tæt felt kan koges ned til de vigtigste steder.")
-
-    theme.side_heading("Billede")
+ 
+    st.sidebar.header("Billede")
     image_names = sorted(set(nuclei_df["image"]) | set(clusters_df["image"]))
     if not image_names:
         st.warning("Ingen kerner fundet i nogen billeder.")
@@ -400,64 +393,66 @@ def render_case1_nuclei():
     nuclei = nuclei_df[nuclei_df["image"] == image_name]
     all_clusters = clusters_df[clusters_df["image"] == image_name]
     clusters = all_clusters[all_clusters["n_nuclei"] >= min_size].sort_values("priority_rank").copy()
-    clusters["priority_rank"] = range(1, len(clusters) + 1)  # renumber after filtering
+    clusters["priority_rank"] = range(1, len(clusters) + 1)  # nummerér om efter filtrering
     n_clusters = len(clusters)
-
-    theme.side_heading("Gennemgang (klynger)")
-    current = step_controls(f"c1n_step_{image_name}", n_clusters, key="c1n", noun="klynge")
-
-    theme.legend("Forklaring", [
-        (rgb(COLOR_CLUSTER), True, "<b>Klynge</b> af kerner · tal = rækkefølge, flest kerner først"),
-        (rgb(COLOR_NUCLEUS), True, "<b>Enkelt kerne</b>"),
-        (rgb(COLOR_CURRENT), True, "<b>Aktuel klynge</b>"),
-    ])
-    st.sidebar.info("Kerner = mørke, farvede, runde objekter · klynge = kerner < 60 px fra hinanden")
-
-    image = load_image_or_stop(image_name)
-    theme.topbar("Case 1 · Kerner", "Hvor er der noget at kigge på?",
-                 sample_id(image_name), position(image_names, image_name))
-
-    col_image, col_info = st.columns([3, 1.1])
+ 
+    step_key = f"c1n_step_{image_name}"
+    if step_key not in st.session_state:
+        st.session_state[step_key] = 0
+    st.sidebar.markdown("---")
+    st.sidebar.header("Gennemgang (klynger)")
+    c_a, c_b, c_c = st.sidebar.columns(3)
+    if c_a.button("Oversigt", key="c1n_overview"):
+        st.session_state[step_key] = 0
+    if c_b.button("◀ Forrige", key="c1n_prevcluster"):
+        st.session_state[step_key] = max(1, st.session_state[step_key] - 1) if n_clusters else 0
+    if c_c.button("Næste ▶", key="c1n_nextcluster"):
+        st.session_state[step_key] = min(n_clusters, st.session_state[step_key] + 1)
+    current = st.session_state[step_key]
+    st.sidebar.caption(f"Klynge {current} / {n_clusters}" if current else f"{n_clusters} klynger at gennemgå")
+ 
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(
+        "**Forklaring**  \n"
+        "🟠 orange cirkel = klynge af kerner, tal = rækkefølge (flest kerner først)  \n"
+        "🟢 grøn cirkel = enkelt kerne  \n"
+        "🟡 gul = aktuel klynge"
+    )
+ 
+    image_path = RAW_DIR / image_name
+    if not image_path.exists():
+        st.error(f"Image file not found: {image_path}")
+        st.stop()
+    image = Image.open(image_path).convert("RGB")
+ 
+    col_image, col_info = st.columns([3, 1])
     with col_image:
         st.image(draw_nuclei_overlay(image, nuclei, clusters, show_clusters, show_nuclei,
-                                     current_rank=current or None), width="stretch")
-
+                                     current_rank=current or None),
+                 caption=image_name, width="stretch")
+ 
     with col_info:
-        rows = [
-            ("Kerner fundet", f"{len(nuclei)}", "", True),
-            ("Klynger", f"{n_clusters}" + (f" af {len(all_clusters)}" if min_size > 1 else "")),
-        ]
+        st.subheader("Oversigt")
+        st.metric("Kerner fundet", len(nuclei))
+        st.metric("Klynger", f"{n_clusters}" + (f" (af {len(all_clusters)})" if min_size > 1 else ""))
         if n_clusters:
-            rows.append(("Største klynge", f"{int(clusters['n_nuclei'].max())} kerner"))
-        theme.stats_card("Billedet", rows)
-
+            st.metric("Største klynge", f"{int(clusters['n_nuclei'].max())} kerner")
         if current:
             c = clusters.iloc[current - 1]
-            theme.stats_card(f"Klynge #{current} af {n_clusters}", [
-                ("Kerner i klyngen", f"{int(c['n_nuclei'])}"),
-                ("Centrum", f"({int(c['cx'])}, {int(c['cy'])})"),
-                ("Radius", f"{int(c['radius'])} px"),
-            ])
-            with st.container(key="bd_inset"):
-                st.image(crop_circle(image, c["cx"], c["cy"], c["radius"]), width="stretch")
-        else:
-            hint("Tryk <b>▶</b> i sidepanelet for at gå klyngerne igennem, største først. "
-                 "Den aktuelle klynge vises forstørret her.")
-
+            st.markdown("---")
+            st.subheader(f"Klynge #{current}")
+            st.image(crop_circle(image, c["cx"], c["cy"], c["radius"]), width="stretch")
+            st.metric("Kerner i klyngen", int(c["n_nuclei"]))
+            st.caption(f"Centrum ({int(c['cx'])}, {int(c['cy'])}) · radius {int(c['radius'])} px")
+ 
     with st.expander("Alle klynger"):
         st.dataframe(clusters[["priority_rank", "n_nuclei", "cx", "cy", "radius"]].round(1)
                      .reset_index(drop=True), width="stretch")
     with st.expander("Alle kerner"):
         st.dataframe(nuclei[["nucleus_id", "x", "y", "radius", "area", "circularity", "from_clump", "cluster_id"]]
                      .round(2).reset_index(drop=True), width="stretch")
-
-
-def verdict_dot(label) -> str:
-    color = theme.VERDICT_COLORS.get(label, "transparent")
-    border = "" if label in theme.VERDICT_COLORS else f"border:1px dashed {theme.NEUTRAL};"
-    return f'<span class="dot" style="background:{color};{border}"></span>'
-
-
+ 
+ 
 def render_case2_overview():
     if not CASE2_TRIAGE.exists():
         st.error("Run features.py and triage.py first - triage_results.csv not found.")
@@ -465,77 +460,62 @@ def render_case2_overview():
     triage_df = pd.read_csv(CASE2_TRIAGE)
     if "human_eval" not in triage_df:
         triage_df["human_eval"] = pd.NA
-
-    theme.side_heading("Filter")
+ 
+    st.sidebar.header("Filter")
     scope = st.sidebar.radio("Vis", ["Alle", "Kun uden human evaluering", "Kun uenige"], key="ov_scope")
     auto_filter = st.sidebar.multiselect("Auto evaluering", TRIAGE_CATEGORIES, default=TRIAGE_CATEGORIES, key="ov_auto")
     per_row = st.sidebar.slider("Billeder pr. række", 2, 6, 4, key="ov_cols")
-
+ 
     df = triage_df[triage_df["triage"].isin(auto_filter)]
     if scope == "Kun uden human evaluering":
         df = df[df["human_eval"].isna()]
     elif scope == "Kun uenige":
         df = df[df["human_eval"].notna() & (df["human_eval"] != df["triage"])]
     df = df.sort_values("image").reset_index(drop=True)
-
+ 
     n_reviewed = int(triage_df["human_eval"].notna().sum())
     n_agree = int((triage_df["human_eval"].notna() & (triage_df["human_eval"] == triage_df["triage"])).sum())
-    theme.side_heading("Status")
-    theme.progress_card(n_reviewed, len(triage_df), n_agree)
-    theme.legend("Forklaring", [
-        (theme.OK, False, "<b>egnet</b>"),
-        (theme.WARN, False, "<b>suboptimal</b>"),
-        (theme.BAD, False, "<b>uegnet</b>"),
-    ])
-
-    theme.topbar("Case 2 · Oversigt", "Alle prøver med auto-vurdering og din vurdering",
-                 counter=f"{len(df)} af {len(triage_df)} billeder vist")
-
+    st.markdown(f"**{len(df)} billeder vist** · vurderet {n_reviewed} / {len(triage_df)}"
+                + (f" · enighed {n_agree} / {n_reviewed}" if n_reviewed else ""))
+ 
     if df.empty:
-        hint("Ingen billeder matcher filteret.")
+        st.info("Ingen billeder matcher filteret.")
         return
-
-    with st.container(key="bd_overview"):
-        for start in range(0, len(df), per_row):
-            cols = st.columns(per_row)
-            for col, (_, row) in zip(cols, df.iloc[start : start + per_row].iterrows()):
-                path = RAW_DIR / row["image"]
-                with col:
-                    if path.exists():
-                        thumb = Image.open(path).convert("RGB")
-                        thumb.thumbnail((400, 400))
-                        st.image(thumb, width="stretch")
-                    else:
-                        st.warning("mangler fil")
-                    human = row["human_eval"] if pd.notna(row["human_eval"]) else None
-                    st.markdown(
-                        f'<div class="bd-thumb-meta">'
-                        f'<span class="pair">{verdict_dot(row["triage"])}<span class="who">Auto</span>'
-                        f'<span class="val">{row["triage"]}</span></span>'
-                        f'<span class="pair">{verdict_dot(human)}<span class="who">Din</span>'
-                        f'<span class="val">{human or "–"}</span></span>'
-                        f'</div><div class="bd-thumb-id">{row["image"][:16]}…</div>',
-                        unsafe_allow_html=True,
-                    )
-                    if st.button("Åbn", key=f"open_{row['image']}", width="stretch"):
-                        st.session_state["pending_nav"] = {"case": "Case 2", "sub": "Enkelt billede", "image": row["image"]}
-                        st.rerun()
-
-
+ 
+    for start in range(0, len(df), per_row):
+        cols = st.columns(per_row)
+        for col, (_, row) in zip(cols, df.iloc[start : start + per_row].iterrows()):
+            path = RAW_DIR / row["image"]
+            with col:
+                if path.exists():
+                    thumb = Image.open(path).convert("RGB")
+                    thumb.thumbnail((400, 400))
+                    st.image(thumb, width="stretch")
+                else:
+                    st.warning("mangler fil")
+                human = row["human_eval"] if pd.notna(row["human_eval"]) else "Ingen evaluering"
+                st.markdown(f"**Auto:** {row['triage']}  \n**Human:** {human}")
+                st.caption(row["image"][:16] + "…")
+                if st.button("Åbn", key=f"open_{row['image']}", width="stretch"):
+                    st.session_state["pending_nav"] = {"case": "Case 2", "sub": "Enkelt billede", "image": row["image"]}
+                    st.rerun()
+ 
+ 
 def render_case2():
     if not CASE2_FEATURES.exists() or not CASE2_TRIAGE.exists():
         st.error("Run features.py and triage.py first - features.csv / triage_results.csv not found.")
         st.stop()
-
+ 
     tiles_df, triage_df = load_case2()
     labels_df = load_manual_labels()
-
-    theme.side_heading("Filter")
+    st.sidebar.info(grid_info(tiles_df))
+ 
+    st.sidebar.header("Filter")
     st.session_state.setdefault("c2_filter_auto", TRIAGE_CATEGORIES)
     st.session_state.setdefault("c2_only_unlabeled", False)
     selected = st.sidebar.multiselect("Auto evaluering", TRIAGE_CATEGORIES, key="c2_filter_auto")
     only_unlabeled = st.sidebar.checkbox("Kun billeder jeg ikke har vurderet", key="c2_only_unlabeled")
-
+ 
     filtered = triage_df[triage_df["triage"].isin(selected)]
     if only_unlabeled:
         filtered = filtered[~filtered["image"].isin(labels_df["image"])]
@@ -543,63 +523,71 @@ def render_case2():
     if not image_names:
         st.warning("Ingen billeder matcher filteret.")
         st.stop()
-
-    theme.side_heading("Billede")
+ 
+    st.sidebar.header("Billede")
     image_name = pick_image(image_names, key="c2")
-
+ 
     n_reviewed = int(triage_df["human_eval"].notna().sum()) if "human_eval" in triage_df else 0
     n_agree = int(triage_df["agrees"].fillna(False).astype(bool).sum()) if "agrees" in triage_df else 0
-    theme.side_heading("Status")
-    theme.progress_card(n_reviewed, len(triage_df), n_agree)
-    theme.legend("Forklaring", [
-        (rgb(COLOR_USABLE), False, "<b>Brugbart felt</b>"),
-        (rgb(COLOR_FAILED), False, "<b>Ikke brugbart</b>, med årsag:"),
-        (rgb(COLOR_FAILED), "C", "for lidt cellemateriale"),
-        (rgb(COLOR_FAILED), "B", "uskarpt <i>(kun felter med celler)</i>"),
-        (rgb(COLOR_FAILED), "D", "for meget debris <i>(kun felter med celler)</i>"),
-    ])
-    st.sidebar.info(grid_info(tiles_df))
-
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(f"**Vurderet:** {n_reviewed} / {len(triage_df)} billeder")
+    if n_reviewed:
+        st.sidebar.markdown(f"**Enighed indtil nu:** {n_agree} / {n_reviewed}")
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(
+        "**Forklaring**  \n"
+        "🟩 grøn = brugbart felt  \n"
+        "🟥 rød = ikke brugbart:  \n"
+        "&nbsp;&nbsp;C = for lidt cellemateriale  \n"
+        "&nbsp;&nbsp;B = uskarpt (kun vurderet hvor der er celler)  \n"
+        "&nbsp;&nbsp;D = for meget debris (kun vurderet hvor der er celler)"
+    )
+ 
     image_row = triage_df[triage_df["image"] == image_name].iloc[0]
     image_tiles = tiles_df[tiles_df["image"] == image_name]
-    image = load_image_or_stop(image_name)
-
-    theme.topbar("Case 2 · Triagering", "Er prøven egnet til vurdering?",
-                 sample_id(image_name), position(image_names, image_name))
-
-    col_image, col_info = st.columns([3, 1.1])
+ 
+    image_path = RAW_DIR / image_name
+    if not image_path.exists():
+        st.error(f"Image file not found: {image_path}")
+        st.stop()
+    image = Image.open(image_path).convert("RGB")
+ 
+    col_image, col_info = st.columns([3, 1])
     with col_image:
-        st.image(draw_triage_overlay(image, image_tiles), width="stretch")
-
+        st.image(draw_triage_overlay(image, image_tiles), caption=image_name, width="stretch")
+ 
     with col_info:
+        st.subheader("Auto evaluering")
+        st.markdown(f"## `{image_row['triage']}`")
+        existing = image_row.get("human_eval")
+        st.subheader("Human evaluering")
+        if pd.notna(existing):
+            verdict = "enig" if existing == image_row["triage"] else "uenig"
+            st.markdown(f"## `{existing}`")
+            st.caption(f"{verdict} med auto evaluering · {image_row.get('human_eval_at', '')}")
+        else:
+            st.markdown("## `ingen evaluering`")
+ 
         msg_key = f"saved_msg_{image_name}"
         if st.session_state.get(msg_key):
-            st.markdown(f'<div class="bd-saved">✓ Din vurdering (<b>{st.session_state.pop(msg_key)}</b>) er gemt</div>',
-                        unsafe_allow_html=True)
-
-        existing = image_row.get("human_eval")
-        human = existing if pd.notna(existing) else None
-        when = image_row.get("human_eval_at", "")
-        theme.verdict_card(image_row["triage"], human, human == image_row["triage"],
-                           when if isinstance(when, str) else "")
-
-        with st.container(key="bd_verdict_btns"):
-            st.markdown('<p class="bd-h" style="margin:0">Sæt din vurdering</p>', unsafe_allow_html=True)
-            for col, category in zip(st.columns([1, 1.4, 1]), TRIAGE_CATEGORIES):  # 'suboptimal' is the long word
-                if col.button(category, key=f"label_{category}", width="stretch"):
-                    save_manual_label(image_name, category)
-                    st.session_state[msg_key] = category
-                    st.rerun()
-
+            st.success(f"Din evaluering ({st.session_state.pop(msg_key)}) er gemt")
+ 
+        st.markdown("---")
+        st.metric("Brugbare felter", f"{int(image_row['usable_tiles'])} / {int(image_row['total_tiles'])}")
+        st.metric("Felter med celler", f"{int(image_row['cellular_tiles'])} / {int(image_row['total_tiles'])}")
+        st.metric("Gns. cellularitet", f"{image_row['mean_cellularity']:.3f}")
         blur, debris = image_row["mean_blur_cellular"], image_row["mean_debris_cellular"]
-        theme.stats_card("Nøgletal", [
-            ("Brugbare felter", f"{int(image_row['usable_tiles'])} / {int(image_row['total_tiles'])}", "", True),
-            ("Felter med celler", f"{int(image_row['cellular_tiles'])} / {int(image_row['total_tiles'])}"),
-            ("Gns. cellularitet", f"{image_row['mean_cellularity']:.3f}"),
-            ("Fokus (felter m. celler)", "n/a" if pd.isna(blur) else f"{blur:.1f}"),
-            ("Debris (felter m. celler)", "n/a" if pd.isna(debris) else f"{debris:.1f}"),
-        ])
-
+        st.metric("Fokus (felter m. celler)", "n/a" if pd.isna(blur) else f"{blur:.1f}")
+        st.metric("Debris (felter m. celler)", "n/a" if pd.isna(debris) else f"{debris:.1f}")
+ 
+        st.markdown("---")
+        st.subheader("Din vurdering")
+        for category in TRIAGE_CATEGORIES:
+            if st.button(category, key=f"label_{category}", width="stretch"):
+                save_manual_label(image_name, category)
+                st.session_state[msg_key] = category
+                st.rerun()
+ 
     with st.expander("Alle felter"):
         st.dataframe(
             image_tiles[["row", "col", "cellularity", "blur_score", "debris_score",
@@ -607,12 +595,11 @@ def render_case2():
             .sort_values(["row", "col"]).reset_index(drop=True),
             width="stretch",
         )
-
-
+ 
+ 
 def apply_pending_navigation():
-    """Widget state can only be set before the widget is drawn, so jumps
-    requested during the previous run (e.g. 'Åbn' in the overview) are
-    applied here, first thing."""
+    """Widget-state kan kun sættes, før widgetten tegnes, så spring bestilt i
+    forrige kørsel (fx 'Åbn' i oversigten) udføres her, som det første."""
     nav = st.session_state.pop("pending_nav", None)
     if not nav:
         return
@@ -620,22 +607,23 @@ def apply_pending_navigation():
     st.session_state[f"sub_{nav['case']}"] = nav["sub"]
     if "image" in nav:
         st.session_state["c2_jump_to"] = nav["image"]
-        # Reset single-view filters so the requested image is certainly in the list.
+        # Nulstil enkeltbillede-filtrene, så det ønskede billede med sikkerhed er i listen.
         st.session_state["c2_filter_auto"] = TRIAGE_CATEGORIES
         st.session_state["c2_only_unlabeled"] = False
-
-
+ 
+ 
 def main():
-    st.set_page_config(page_title="Billeddiagnostik · Cytologi", page_icon="🔬", layout="wide")
-    theme.inject()
+    st.set_page_config(page_title="Billeddiagnostik PoC", layout="wide")
+    ensure_raw_data()  # efter set_page_config, som skal være første Streamlit-kald
     apply_pending_navigation()
-
-    st.sidebar.markdown('<div class="bd-brand">Billeddiagnostik<span>Cytologi · Patologi, AUH Skejby</span></div>',
-                        unsafe_allow_html=True)
+ 
     case = st.sidebar.radio("Vælg case", list(SUBVIEWS.keys()), key="case")
-    theme.side_note(CASE_DESCRIPTIONS[case])
+    st.sidebar.caption(CASE_DESCRIPTIONS[case])
     sub = st.sidebar.radio("Visning", SUBVIEWS[case], key=f"sub_{case}", horizontal=True)
-
+    st.sidebar.caption(CASES[f"{case} - {sub}"])
+    st.sidebar.markdown("---")
+    st.title(f"{case} - {sub}")
+ 
     if case == "Case 1" and sub == "Felter":
         render_case1()
     elif case == "Case 1" and sub == "Kerner":
@@ -644,10 +632,7 @@ def main():
         render_case2_overview()
     else:
         render_case2()
-
-    theme.side_heading("Om visningen")
-    theme.side_note(CASES[f"{case} - {sub}"])
-
-
+ 
+ 
 if __name__ == "__main__":
     main()
