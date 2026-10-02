@@ -11,7 +11,8 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
-data/
+data/*
+!data/processed/
 
 # macOS
 .DS_Store
