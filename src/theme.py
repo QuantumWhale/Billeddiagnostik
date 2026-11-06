@@ -1,41 +1,44 @@
 """
-Visual layer for the Billeddiagnostik review interface.
+Det visuelle lag til Billeddiagnostiks gennemgangsinterface.
 
-Design goal: a calm clinical workstation rather than a demo dashboard.
-Three principles drive everything here:
+Designmålet er en rolig klinisk arbejdsstation og ikke et demo-dashboard.
+Tre principper styrer alt herinde:
 
-1. The specimen is the only saturated thing on screen. Cytology stains are
-   pink/purple; the interface is built from desaturated cool greys so it never
-   competes with - or shifts the perception of - the material being reviewed.
-2. The screen is a fixed budget. A pathologist should reach a verdict without
-   scrolling, so vertical space is spent deliberately: images are capped in
-   viewport-relative height, and numbers are shown as compact label/value rows
-   instead of Streamlit's very tall default metrics.
-3. Status is carried by colour *and* text, never colour alone.
+1. Præparatet er det eneste mættede på skærmen. Cytologifarvninger er
+   lyserøde/lilla, så interfacet er bygget op af afmættede, kølige grå nuancer,
+   og det konkurrerer derfor aldrig med - eller ændrer opfattelsen af - det
+   materiale, der bliver gennemgået.
+2. Skærmen er et fast budget. En patolog skal kunne nå frem til en vurdering
+   uden at scrolle, så den lodrette plads bruges med omtanke: billederne har en
+   maksimal højde i forhold til viewporten, og tal vises som kompakte
+   label/værdi-rækker i stedet for Streamlits meget høje standard-metrics.
+3. Status vises med farve *og* tekst, aldrig kun med farve.
 
-Everything is plain CSS injected once per run, so the app keeps working
-exactly as before if this module is removed.
+Det hele er almindelig CSS, der sprøjtes ind én gang pr. kørsel, så appen
+virker præcis som før, hvis man fjerner modulet.
 """
 
 import re
 
 import streamlit as st
 
-# --- Clinical palette --------------------------------------------------------
-# Cool, low-chroma neutrals. The single accent is an instrument teal-blue.
-INK = "#132434"          # primary text
-INK_SOFT = "#5c6f80"     # secondary text
-LINE = "#d5dde5"         # hairlines and card borders
-SURFACE = "#ffffff"      # cards
-GROUND = "#eaeef3"       # app background
-ACCENT = "#0d6a8a"       # navigation, focus, links
+# --- Klinisk palet -----------------------------------------------------------
+# Kølige, neutrale farver med lav kroma. Den eneste accentfarve er en
+# petroleumsblå, der minder om et instrument.
+INK = "#132434"          # primær tekst
+INK_SOFT = "#5c6f80"     # sekundær tekst
+LINE = "#d5dde5"         # tynde streger og kortkanter
+SURFACE = "#ffffff"      # kort
+GROUND = "#eaeef3"       # appens baggrund
+ACCENT = "#0d6a8a"       # navigation, fokus, links
 
-# Verdict colours: distinct in hue *and* lightness so they survive the
-# red-green colour vision deficiency that ~8% of male clinicians have.
+# Farver til vurderingerne: de er forskellige i både farvetone *og* lyshed,
+# så de stadig kan skelnes med rød-grøn farveblindhed, som ~8 % af de
+# mandlige klinikere har.
 OK = "#1a7f4b"           # egnet
 WARN = "#a86a08"         # suboptimal
 BAD = "#b8372b"          # uegnet
-NEUTRAL = "#7b8a99"      # not yet assessed
+NEUTRAL = "#7b8a99"      # endnu ikke vurderet
 
 VERDICT_COLORS = {
     "egnet": OK,
@@ -61,12 +64,12 @@ CSS = f"""
   --warn: {WARN};
   --bad: {BAD};
   --neutral: {NEUTRAL};
-  /* Height budget for the main specimen image: the viewport minus the top
-     bar, the collapsed table expanders and padding. The image grows on a large
-     reporting monitor and shrinks on a laptop, but never pushes the page into
-     scrolling. */
+  /* Højdebudget for hovedbilledet: viewporten minus topbjælken, de
+     sammenklappede tabel-expanders og padding. Billedet bliver større på en
+     stor diagnostikskærm og mindre på en laptop, men skubber aldrig siden ud i
+     scroll. */
   --img-h: calc(100vh - 265px);
-  --img-h-inset: 21vh;   /* the zoomed crop in the right-hand rail */
+  --img-h-inset: 21vh;   /* det zoomede udsnit i højre kolonne */
 }}
 
 html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
@@ -75,9 +78,10 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
 }}
 [data-testid="stApp"] {{ background: var(--ground); }}
 
-/* --- Reclaim vertical space -------------------------------------------------
-   Streamlit ships 96px of top and 160px of bottom padding. On a 900px laptop
-   screen that is over a quarter of the usable height spent on nothing. */
+/* --- Genvind lodret plads ---------------------------------------------------
+   Streamlit kommer med 96px padding i toppen og 160px i bunden. På en 900px
+   laptopskærm er det over en fjerdedel af den brugbare højde, der går til
+   ingenting. */
 [data-testid="stMainBlockContainer"] {{
   padding-top: 1.1rem;
   padding-bottom: 1.6rem;
@@ -86,18 +90,20 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
   max-width: 1800px;
 }}
 [data-testid="stHeader"] {{ background: transparent; height: 0; }}
-/* Streamlit gives markdown blocks a -1rem bottom margin to cancel paragraph
-   spacing. Our HTML blocks carry their own spacing, so that negative margin
-   made headings and cards slide underneath the next control. */
+/* Streamlit giver markdown-blokke en bundmargen på -1rem for at modvirke
+   afstanden mellem afsnit. Vores HTML-blokke har deres egen afstand, så den
+   negative margen fik overskrifter og kort til at glide ind under den næste
+   kontrol. */
 [data-testid="stMarkdownContainer"] {{ margin-bottom: 0 !important; }}
 [data-testid="stMarkdownContainer"] > p:last-child {{ margin-bottom: 0; }}
 [data-testid="stMain"] .stElementContainer {{ margin-bottom: 0; }}
 [data-testid="stVerticalBlock"] {{ gap: 0.55rem; }}
 [data-testid="stMain"] [data-testid="stHorizontalBlock"] {{ gap: 1rem; }}
 
-/* --- Top bar ---------------------------------------------------------------
-   Replaces the oversized page title. Carries the identifiers a reviewer needs
-   to stay oriented: which view, which sample, how far through the series. */
+/* --- Topbjælke -------------------------------------------------------------
+   Erstatter den alt for store sidetitel. Den viser det, man skal bruge for at
+   holde styr på, hvor man er: hvilken visning, hvilken prøve, og hvor langt man
+   er nået i serien. */
 .bd-topbar {{
   display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.55rem 1.1rem;
   padding: 0.3rem 0 0.7rem 0;
@@ -120,7 +126,7 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
   font-size: 0.8rem; color: var(--ink-soft); font-variant-numeric: tabular-nums;
 }}
 
-/* --- Cards ----------------------------------------------------------------- */
+/* --- Kort ------------------------------------------------------------------ */
 .bd-card {{
   background: var(--surface);
   border: 1px solid var(--line);
@@ -128,16 +134,16 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
   padding: 0.6rem 0.75rem;
   margin-bottom: 0.55rem;
 }}
-/* Qualified with p so Streamlit's own paragraph styles don't win. */
+/* Kvalificeret med p, så Streamlits egne afsnitsstile ikke vinder. */
 .bd-h, [data-testid="stMarkdownContainer"] p.bd-h {{
   font-size: 0.7rem; font-weight: 700; letter-spacing: 0.07em;
   text-transform: uppercase; color: var(--ink-soft);
   margin: 0 0 0.45rem 0;
 }}
 
-/* --- Verdict display --------------------------------------------------------
-   Auto and human verdict sit side by side: the comparison is the point of
-   Case 2, so it should be one glance, not two. */
+/* --- Visning af vurderinger -------------------------------------------------
+   Auto- og menneskevurderingen står side om side: sammenligningen er hele
+   pointen med Case 2, så den skal kunne ses med ét blik og ikke to. */
 .bd-verdicts {{ display: flex; gap: 0.5rem; }}
 .bd-verdicts > div {{ flex: 1; min-width: 0; }}
 .bd-vlabel {{
@@ -165,9 +171,9 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
 .bd-agree.enig b {{ color: var(--ok); }}
 .bd-agree.uenig b {{ color: var(--bad); }}
 
-/* --- Compact statistics -----------------------------------------------------
-   st.metric renders a ~90px tall block per number. Five of those pushed the
-   verdict buttons off screen entirely; these rows are ~24px each. */
+/* --- Kompakt statistik ------------------------------------------------------
+   st.metric tegner en ~90px høj blok per tal. Fem af dem skubbede
+   vurderingsknapperne helt ud af skærmen; de her rækker er ~24px hver. */
 .bd-stats {{ display: flex; flex-direction: column; }}
 .bd-stat {{
   display: flex; align-items: baseline; justify-content: space-between;
@@ -186,9 +192,9 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
 .bd-stat .v.warn {{ color: var(--warn); }}
 .bd-stat .v.bad {{ color: var(--bad); }}
 
-/* --- Images ----------------------------------------------------------------
-   Cap height rather than width: a 1376x1020 specimen at full column width is
-   taller than the screen. */
+/* --- Billeder --------------------------------------------------------------
+   Begræns højden frem for bredden: et præparat på 1376x1020 i fuld
+   kolonnebredde er højere end skærmen. */
 [data-testid="stMain"] [data-testid="stImage"] img {{
   max-height: var(--img-h);
   width: auto !important;
@@ -202,7 +208,7 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
 [data-testid="stMain"] [data-testid="stFullScreenFrame"] > div {{
   display: flex; justify-content: center;
 }}
-/* The inset crop in the right rail gets a much smaller budget. */
+/* Det indsatte udsnit i højre kolonne får et meget mindre budget. */
 .st-key-bd_inset [data-testid="stImage"] img {{
   max-height: var(--img-h-inset);
   border-color: #c8d2dc;
@@ -211,7 +217,7 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
   font-size: 0.72rem; color: var(--ink-soft); padding-top: 0.25rem;
 }}
 
-/* --- Sidebar ---------------------------------------------------------------- */
+/* --- Sidepanel -------------------------------------------------------------- */
 .bd-brand {{
   font-size: 0.98rem; font-weight: 700; letter-spacing: -0.01em; color: var(--ink);
   padding: 0 0 0.55rem 0; border-bottom: 1px solid var(--line); margin-bottom: 0.3rem;
@@ -235,8 +241,8 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
 }}
 [data-testid="stSidebar"] hr {{ margin: 0.5rem 0; border-color: var(--line); }}
 
-/* Primary case navigation - deliberately the largest text in the sidebar,
-   because it is the one control that changes what the whole screen means. */
+/* Primær case-navigation - med vilje den største tekst i sidepanelet, fordi
+   det er den eneste kontrol, der ændrer, hvad hele skærmen betyder. */
 .st-key-case [data-testid="stWidgetLabel"] {{ display: none; }}
 .st-key-case, .st-key-case [data-testid="stRadio"],
 .st-key-case [role="radiogroup"] {{ width: 100% !important; }}
@@ -257,7 +263,7 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
 }}
 .st-key-case [role="radiogroup"] > label:has(input:checked) p {{ color: var(--accent) !important; }}
 
-/* Sub-view switch reads as a segmented control under the case. */
+/* Skiftet mellem delvisninger ser ud som en segmenteret kontrol under casen. */
 [class*="st-key-sub_"] [data-testid="stWidgetLabel"] {{ display: none; }}
 [class*="st-key-sub_"] label p {{ font-size: 0.9rem !important; font-weight: 550 !important; }}
 
@@ -267,7 +273,7 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
 }}
 .bd-side-note em {{ color: var(--ink); font-style: italic; }}
 
-/* Legend: fixed-width swatches so the rows align into a column. */
+/* Signaturforklaring: swatches med fast bredde, så rækkerne står på linje. */
 .bd-legend {{ font-size: 0.78rem; line-height: 1.5; color: var(--ink-soft); }}
 .bd-legend .row {{ display: flex; align-items: flex-start; gap: 0.45rem; margin-bottom: 0.18rem; }}
 .bd-legend .sw {{
@@ -276,14 +282,14 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
 }}
 .bd-legend .sw.ring {{ background: transparent; border-width: 2px; border-radius: 50%; }}
 .bd-legend b {{ color: var(--ink); font-weight: 600; }}
-/* Reason codes are drawn as the same red corner badges used on the image. */
+/* Årsagskoderne tegnes som de samme røde hjørnemærker, der bruges på billedet. */
 .bd-legend .code {{
   flex: 0 0 auto; min-width: 15px; text-align: center;
   font-size: 0.64rem; font-weight: 700; line-height: 1.45; color: #fff;
   border-radius: 2px; padding: 0 0.2rem; margin-top: 0.08rem;
 }}
 
-/* Progress readout in the sidebar. */
+/* Visning af fremskridt i sidepanelet. */
 .bd-progress {{
   background: var(--surface); border: 1px solid var(--line);
   border-radius: 4px; padding: 0.45rem 0.55rem; font-size: 0.8rem;
@@ -307,8 +313,8 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
   border-color: var(--accent); color: var(--accent); background: #f2f8fa;
 }}
 
-/* The three verdict buttons are the primary action of Case 2: colour-coded,
-   full width, and placed directly beneath the verdict they will change. */
+/* De tre vurderingsknapper er hovedhandlingen i Case 2: farvekodede, i fuld
+   bredde og placeret lige under den vurdering, de ændrer. */
 .st-key-bd_verdict_btns [data-testid="stHorizontalBlock"] {{ gap: 0.35rem; }}
 .st-key-bd_verdict_btns .stButton button {{
   width: 100%; font-weight: 650; font-size: 0.86rem;
@@ -342,7 +348,7 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
 
 [data-testid="stDataFrame"] {{ font-variant-numeric: tabular-nums; }}
 
-/* Overview grid: each thumbnail is a card whose left edge carries the verdict. */
+/* Oversigtsgitter: hvert thumbnail er et kort, hvis venstre kant viser vurderingen. */
 .bd-thumb-meta {{
   display: flex; align-items: center; justify-content: space-between;
   gap: 0.4rem; font-size: 0.75rem; padding: 0.1rem 0 0.2rem 0;
@@ -361,7 +367,7 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
 }}
 .st-key-bd_overview [data-testid="stImage"] img {{ max-height: none; }}
 
-/* Saved-confirmation strip. */
+/* Bekræftelsesstribe, når noget er gemt. */
 .bd-saved {{
   background: #e7f3ec; border: 1px solid #b9dcc7; color: #14603a;
   border-radius: 4px; padding: 0.3rem 0.5rem; font-size: 0.79rem;
@@ -372,13 +378,13 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
 
 
 def inject() -> None:
-    """Apply the stylesheet. Safe to call on every rerun."""
+    """Lægger stylesheetet på. Kan roligt kaldes ved hver eneste rerun."""
     st.markdown(CSS, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
-# Small render helpers. Each returns nothing and writes one markdown block,
-# which keeps the DOM shallow and the vertical rhythm predictable.
+# Små hjælpefunktioner til rendering. De returnerer ingenting og skriver hver
+# én markdown-blok, så DOM'en holdes flad og den lodrette rytme forudsigelig.
 # ---------------------------------------------------------------------------
 
 def topbar(title: str, subtitle: str = "", sample_id: str = "", counter: str = "") -> None:
@@ -403,7 +409,7 @@ def _stat_row(label: str, value: str, tone: str = "", lead: bool = False) -> str
 
 
 def stats_card(heading: str, rows: list) -> None:
-    """rows: list of (label, value) or (label, value, tone) or (label, value, tone, lead)."""
+    """rows: liste af (label, value) eller (label, value, tone) eller (label, value, tone, lead)."""
     body = "".join(_stat_row(*r) for r in rows)
     head = f'<p class="bd-h">{heading}</p>' if heading else ""
     st.markdown(
@@ -413,7 +419,7 @@ def stats_card(heading: str, rows: list) -> None:
 
 
 def verdict_card(auto: str, human: str | None, agrees: bool | None, when: str = "") -> None:
-    """Auto verdict and the reviewer's verdict, side by side."""
+    """Auto-vurderingen og brugerens egen vurdering side om side."""
     auto_cls = auto if auto in VERDICT_COLORS else "tom"
     if human:
         human_html = f'<span class="bd-chip {human}">{human}</span>'
@@ -438,8 +444,8 @@ def verdict_card(auto: str, human: str | None, agrees: bool | None, when: str = 
 
 
 def legend(title: str, items: list) -> None:
-    """items: list of (colour, marker, html_text). marker is False for a filled
-    swatch, True for a ring, or a short string such as "C" for a code badge."""
+    """items: liste af (colour, marker, html_text). marker er False for en udfyldt
+    swatch, True for en ring eller en kort streng som fx "C" for et kodemærke."""
     rows = ""
     for color, marker, text in items:
         if isinstance(marker, str):
@@ -461,7 +467,7 @@ def side_heading(text: str) -> None:
 
 
 def side_note(text: str) -> None:
-    # Markdown isn't parsed inside raw HTML, so convert *emphasis* ourselves.
+    # Markdown bliver ikke parset inde i rå HTML, så vi laver selv *fremhævning* om.
     text = re.sub(r"\*(.+?)\*", r"<em>\1</em>", text)
     st.sidebar.markdown(f'<div class="bd-side-note">{text}</div>', unsafe_allow_html=True)
 

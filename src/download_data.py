@@ -1,14 +1,14 @@
 """
-Download the CRIC dataset:
+Henter CRIC-datasættet:
 
-Source: Rezende et al. (2021) "Cric searchable image database as a public platform for conventional pap smear cytologic data", Scientific Data.
+Kilde: Rezende et al. (2021) "Cric searchable image database as a public platform for conventional pap smear cytologic data", Scientific Data.
 10.6084/m9.figshare.c.4960286.v2
 
-This script: 
-1. Lists every image in the public Figshare collection via the Figshare v2 REST API 
-2. Downloads each associated file into data/raw/
-3. Writes a metadata.csv mapping article ID -> title -> local filename(s),
-so we can trace every download file back to its source record.
+Scriptet her: 
+1. Lister alle billeder i den offentlige Figshare-samling via Figshare v2 REST API'et
+2. Downloader alle de tilhørende filer til data/raw/
+3. Skriver en metadata.csv, der kobler artikel-ID -> titel -> lokale filnavn(e),
+så vi kan spore hver eneste downloadede fil tilbage til den post, den kom fra.
 
 """
 
@@ -49,7 +49,7 @@ def list_collection_articles(collection_id: int):
  
  
 def get_article_files(article_id: int):
-    """Return the list of downloadable files for a given article id."""
+    """Returnerer listen af filer, der kan downloades, for et givet artikel-id."""
     resp = requests.get(f"{FIGSHARE_API}/articles/{article_id}", timeout=30)
     resp.raise_for_status()
     data = resp.json()
@@ -58,7 +58,7 @@ def get_article_files(article_id: int):
  
 def download_file(url: str, dest: Path):
     if dest.exists() and dest.stat().st_size > 0:
-        return  # already downloaded, skip
+        return  # er allerede hentet, så den springer vi over
     with requests.get(url, stream=True, timeout=60) as r:
         r.raise_for_status()
         with open(dest, "wb") as f:

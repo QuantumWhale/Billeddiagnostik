@@ -1,37 +1,42 @@
 """
-Nucleus-based localisation for Case 1 ("where is there something to look at").
+Kernebaseret lokalisering til Case 1 ("hvor er der noget at kigge på").
  
-Instead of a grid, this finds the nuclei themselves and groups nearby ones
-into clusters - the regions a pathologist would actually go to. Nothing is
-classified: a nucleus is a dark, stained, roughly round blob of plausible
-size. Every step is a simple rule so every detection can be explained.
+I stedet for at lægge et gitter ned over billedet finder vi her selve kernerne
+og samler dem, der ligger tæt på hinanden, i klynger, fordi det er de områder,
+en patolog rent faktisk ville gå hen og kigge på. Der bliver ikke klassificeret
+noget: en kerne er bare en mørk, farvet og nogenlunde rund klat af en realistisk
+størrelse, og hvert trin er en simpel regel, så man altid kan forklare, hvorfor
+en given kerne er blevet fundet.
  
-Detection, per image:
-  1. Light Gaussian blur, then a "nucleus candidate" mask:
-       dark  (grayscale below NUCLEUS_INTENSITY_MAX)   - nuclei take up haematoxylin
-     AND stained (saturation above NUCLEUS_SATURATION_MIN) - rejects unstained
-                                                          dark junk (dust, dirt)
-  2. Morphological opening to drop specks, closing to fill small holes.
-  3. Connected components. Each is kept as one nucleus if its area and
-     roundness are plausible. Oversized components are treated as clumps of
-     touching nuclei and split with a distance-transform watershed - the
-     standard classical approach; it separates lightly overlapping nuclei
-     but will still under-count dense clumps (known limitation).
+Detektion, per billede:
+  1. Let Gaussisk blur og derefter en maske med "kernekandidater":
+       mørk   (gråtone under NUCLEUS_INTENSITY_MAX)   - kerner optager hæmatoxylin
+     OG farvet (mætning over NUCLEUS_SATURATION_MIN) - sorterer mørkt men ufarvet
+                                                        skidt fra (støv, snavs)
+  2. Morfologisk opening for at fjerne småprikker og closing for at lukke små huller.
+  3. Sammenhængende komponenter. Hver komponent beholdes som én kerne, hvis
+     arealet og rundheden er realistiske. Komponenter, der er for store,
+     behandles som klumper af kerner, der rører hinanden, og deles med en
+     watershed på distance-transformen - det er den klassiske standardmetode,
+     og den kan godt skille kerner ad, der overlapper lidt, men den tæller
+     stadig for få i tætte klumper (kendt begrænsning).
  
-Clustering:
-  Nuclei whose centres lie within CLUSTER_LINK_DIST px of each other are
-  linked into one cluster (done as: draw a disc around every centre, take
-  connected components). Each cluster is summarised as a circle around its
-  members, ranked by number of nuclei - most first.
+Klyngedannelse:
+  Kerner, hvis centre ligger inden for CLUSTER_LINK_DIST px af hinanden,
+  kobles sammen til én klynge (i praksis gør vi det ved at tegne en skive
+  rundt om hvert centrum og så tage de sammenhængende komponenter). Hver
+  klynge opsummeres som en cirkel rundt om dens kerner og rangeres efter
+  antal kerner, med flest først.
  
-Outputs:
-  data/processed/nuclei.csv    - one row per detected nucleus
-  data/processed/clusters.csv  - one row per cluster, with priority_rank
+Output:
+  data/processed/nuclei.csv    - én række per fundet kerne
+  data/processed/clusters.csv  - én række per klynge, med priority_rank
  
-All constants marked CALIBRATE depend on magnification/pixel size and stain,
-so check them against real CRIC images (and the CRIC nucleus annotations).
+Husk at alle konstanter markeret CALIBRATE afhænger af forstørrelse/pixelstørrelse
+og farvning, så de skal tjekkes op mod rigtige CRIC-billeder (og CRIC's
+kerneannoteringer), før man stoler for meget på dem.
  
-Usage:
+Brug:
     python src/nuclei.py
     python src/nuclei.py --limit 5
 """
@@ -46,30 +51,30 @@ from tqdm import tqdm
  
 from features import IMAGE_EXTENSIONS, load_image
  
-# --- Detection constants (CALIBRATE) -------------------------------------------
-NUCLEUS_INTENSITY_MAX = 130     # grayscale (0-255) below which a pixel is "dark enough" to be nucleus
-NUCLEUS_SATURATION_MIN = 40     # HSV saturation above which it is stained (not dust/dirt)
-BLUR_KSIZE = 3                  # pre-smoothing before thresholding
-OPEN_KSIZE = 3                  # removes specks smaller than this
-CLOSE_KSIZE = 5                 # fills pinholes inside nuclei
+# --- Detektionskonstanter (CALIBRATE) ------------------------------------------
+NUCLEUS_INTENSITY_MAX = 130     # gråtone (0-255), under hvilken en pixel er "mørk nok" til at være kerne
+NUCLEUS_SATURATION_MIN = 40     # HSV-mætning, over hvilken pixlen er farvet (altså ikke støv/snavs)
+BLUR_KSIZE = 3                  # udjævning før tærskling
+OPEN_KSIZE = 3                  # fjerner prikker, der er mindre end det her
+CLOSE_KSIZE = 5                 # lukker små huller inde i kernerne
  
-NUCLEUS_MIN_AREA = 30           # px^2 - smaller = specks, lymphocyte fragments
-NUCLEUS_MAX_AREA = 1500         # px^2 - larger = clump of nuclei -> try to split
-NUCLEUS_MIN_CIRCULARITY = 0.35  # 4*pi*A/P^2; 1 = perfect circle. Low bar: nuclei are only roughly round
-WATERSHED_MIN_DIST = 8          # px between peaks when splitting clumps (~ nucleus radius)
+NUCLEUS_MIN_AREA = 30           # px^2 - mindre end det er prikker og lymfocytstykker
+NUCLEUS_MAX_AREA = 1500         # px^2 - større end det er en klump kerner -> prøv at dele den
+NUCLEUS_MIN_CIRCULARITY = 0.35  # 4*pi*A/P^2, hvor 1 = perfekt cirkel. Lav grænse, fordi kerner kun er sådan nogenlunde runde
+WATERSHED_MIN_DIST = 8          # px mellem toppe, når klumper deles (~ en kerneradius)
  
-# --- Clustering constants (CALIBRATE) ------------------------------------------
-CLUSTER_LINK_DIST = 60          # px - nuclei closer than this belong to the same cluster
+# --- Klyngekonstanter (CALIBRATE) ----------------------------------------------
+CLUSTER_LINK_DIST = 60          # px - kerner, der ligger tættere end det, hører til samme klynge
  
 DEFAULT_OUTPUT_DIR = Path("data/processed")
  
  
 # ---------------------------------------------------------------------------
-# Detection
+# Detektion
 # ---------------------------------------------------------------------------
  
 def nucleus_candidate_mask(image_bgr: np.ndarray) -> np.ndarray:
-    """Binary uint8 mask (0/255) of dark, stained pixels after cleanup."""
+    """Binær uint8-maske (0/255) med de mørke, farvede pixels, efter oprydning."""
     blurred = cv2.GaussianBlur(image_bgr, (BLUR_KSIZE, BLUR_KSIZE), 0)
     gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
     sat = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)[:, :, 1]
@@ -91,7 +96,7 @@ def _circularity(contour) -> float:
  
  
 def _describe_component(component_mask: np.ndarray, x_off: int, y_off: int) -> dict | None:
-    """Area / centre / radius / circularity for one binary blob, or None if it isn't nucleus-like."""
+    """Areal / centrum / radius / cirkularitet for én binær klat, eller None, hvis den ikke ligner en kerne."""
     contours, _ = cv2.findContours(component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return None
@@ -115,19 +120,19 @@ def _describe_component(component_mask: np.ndarray, x_off: int, y_off: int) -> d
  
 def _split_clump(clump_mask: np.ndarray) -> list[np.ndarray]:
     """
-    Split a large blob into sub-blobs with a distance-transform watershed.
-    Returns a list of binary masks (same shape as clump_mask), one per segment.
+    Deler en stor klat op i mindre klatter med en watershed på distance-transformen.
+    Returnerer en liste af binære masker (samme form som clump_mask), én per segment.
     """
     dist = cv2.distanceTransform(clump_mask, cv2.DIST_L2, 5)
-    # Peaks of the distance transform = centres of the individual nuclei.
+    # Toppene i distance-transformen er centrene af de enkelte kerner.
     kernel = np.ones((WATERSHED_MIN_DIST * 2 + 1,) * 2, np.uint8)
     local_max = (dist == cv2.dilate(dist, kernel)) & (dist > WATERSHED_MIN_DIST * 0.5)
     n_markers, markers = cv2.connectedComponents(local_max.astype(np.uint8))
-    if n_markers <= 2:  # 0 = background, so <=2 means at most one peak: nothing to split
+    if n_markers <= 2:  # 0 = baggrund, så <=2 betyder højst én top, og så er der ikke noget at dele
         return [clump_mask]
  
-    markers = markers + 1               # background becomes 1, peaks 2..n
-    markers[clump_mask == 0] = 0        # 0 = "unknown" for watershed
+    markers = markers + 1               # baggrunden bliver 1, toppene 2..n
+    markers[clump_mask == 0] = 0        # 0 = "ukendt" for watershed
     color = cv2.cvtColor(clump_mask, cv2.COLOR_GRAY2BGR)
     cv2.watershed(color, markers)
     segments = []
@@ -139,12 +144,12 @@ def _split_clump(clump_mask: np.ndarray) -> list[np.ndarray]:
  
  
 def detect_nuclei(image_bgr: np.ndarray) -> pd.DataFrame:
-    """One row per detected nucleus: x, y, radius, area, circularity, from_clump."""
+    """Én række per fundet kerne: x, y, radius, area, circularity, from_clump."""
     mask = nucleus_candidate_mask(image_bgr)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
  
     rows = []
-    for i in range(1, n):  # 0 is background
+    for i in range(1, n):  # 0 er baggrund
         x, y, w, h, area = stats[i]
         if area < NUCLEUS_MIN_AREA:
             continue
@@ -166,14 +171,14 @@ def detect_nuclei(image_bgr: np.ndarray) -> pd.DataFrame:
  
  
 # ---------------------------------------------------------------------------
-# Clustering
+# Klyngedannelse
 # ---------------------------------------------------------------------------
  
 def cluster_nuclei(nuclei: pd.DataFrame, image_shape: tuple, link_dist: int = CLUSTER_LINK_DIST) -> pd.DataFrame:
     """
-    Assign a cluster_id to each nucleus and return one row per cluster
-    (cx, cy, radius, n_nuclei, priority_rank). Modifies `nuclei` in place
-    by adding 'cluster_id'.
+    Giver hver kerne et cluster_id og returnerer én række per klynge
+    (cx, cy, radius, n_nuclei, priority_rank). Husk at `nuclei` bliver
+    ændret in place, fordi der tilføjes en 'cluster_id'-kolonne til den.
     """
     height, width = image_shape[:2]
     if nuclei.empty:
@@ -199,7 +204,7 @@ def cluster_nuclei(nuclei: pd.DataFrame, image_shape: tuple, link_dist: int = CL
             "cluster_id": int(cid),
             "cx": float(cx),
             "cy": float(cy),
-            "radius": float(radius + members["radius"].mean()),  # enclose the nuclei, not just their centres
+            "radius": float(radius + members["radius"].mean()),  # så cirklen omslutter hele kernerne og ikke kun deres centre
             "n_nuclei": int(len(members)),
         })
     out = pd.DataFrame(clusters).sort_values(["n_nuclei", "radius"], ascending=[False, True])
@@ -208,7 +213,7 @@ def cluster_nuclei(nuclei: pd.DataFrame, image_shape: tuple, link_dist: int = CL
  
  
 # ---------------------------------------------------------------------------
-# Orchestration
+# Orkestrering
 # ---------------------------------------------------------------------------
  
 def process_image(image_path: Path):

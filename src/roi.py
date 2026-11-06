@@ -1,29 +1,30 @@
 """
-Region-of-interest ranking for Case 1 ("Scopio-light": where is there
-something to look at?).
+Rangering af interesseområder (ROI) til Case 1 ("Scopio-light": hvor er der
+noget at kigge på?).
 
-Reuses the per-tile measurements from features.py. Nothing here classifies
-cell types or diagnoses anything - a tile is either worth a look or it isn't,
-and the ones worth a look are put in a review order.
+Genbruger målingerne pr. felt fra features.py. Der bliver ikke klassificeret
+celletyper eller stillet nogen diagnoser her - et felt er enten værd at kigge
+på eller ikke, og dem, der er værd at kigge på, sættes i den rækkefølge, de
+skal gennemgås i.
 
-Per tile:
-  is_roi        - the tile contains stained material (cellularity above a
-                  low floor). Everything else is background/glass the
-                  pathologist can skip.
-  in_focus      - focus check, so blurry regions are reviewed last
-  priority_rank - 1 = look here first. ROI tiles are ranked by cellularity
-                  (most material first); out-of-focus ROI tiles go to the end
-                  of the list. Non-ROI tiles have no rank.
+Pr. felt:
+  is_roi        - feltet indeholder farvet materiale (cellularitet over en
+                  lav bundgrænse). Alt andet er baggrund/glas, som patologen
+                  kan springe over.
+  in_focus      - fokustjek, så uskarpe områder bliver gennemgået til sidst
+  priority_rank - 1 = kig her først. ROI-felter rangeres efter cellularitet
+                  (mest materiale først), og ROI-felter, der er ude af fokus,
+                  ryger bagerst i listen. Felter, der ikke er ROI, får ingen rang.
 
-Per image:
-  roi_tiles, total_tiles, pct_roi_area - how much of the field needs review.
+Pr. billede:
+  roi_tiles, total_tiles, pct_roi_area - hvor meget af synsfeltet, der skal gennemgås.
 
-Case 1 wants finer localisation than Case 2, so run features.py with a
-smaller tile size into its own file first:
+Case 1 skal bruge en finere lokalisering end Case 2, så husk at køre
+features.py med en mindre feltstørrelse og ud i sin egen fil først:
     python src/features.py --tile-size 128 --output data/processed/features_case1.csv
     python src/roi.py
 
-Thresholds are placeholders - calibrate on real images via the app.
+Tærsklerne er pladsholdere og skal kalibreres på rigtige billeder via appen.
 """
 
 import argparse
@@ -31,8 +32,8 @@ from pathlib import Path
 
 import pandas as pd
 
-ROI_CELLULARITY_MIN = 0.03   # lower than Case 2's usable-tile floor: "anything to look at"
-ROI_BLUR_MIN = 50.0          # same focus measure as Case 2; below = reviewed last
+ROI_CELLULARITY_MIN = 0.03   # lavere end Case 2's grænse for brugbare felter: "noget som helst at kigge på"
+ROI_BLUR_MIN = 50.0          # samme fokusmål som i Case 2; under grænsen = gennemgås til sidst
 
 DEFAULT_INPUT = Path("data/processed/features_case1.csv")
 DEFAULT_OUTPUT = Path("data/processed/roi_results.csv")
@@ -43,13 +44,14 @@ def rank_tiles(
     cellularity_min: float = ROI_CELLULARITY_MIN,
     blur_min: float = ROI_BLUR_MIN,
 ) -> pd.DataFrame:
-    """Add is_roi, in_focus and priority_rank (per image) to the tile rows."""
+    """Tilføjer is_roi, in_focus og priority_rank (pr. billede) til feltrækkerne."""
     df = df.copy()
     df["is_roi"] = df["cellularity"] >= cellularity_min
     df["in_focus"] = df["blur_score"] >= blur_min
 
-    # Sort so that, within each image: ROI tiles first, in-focus before
-    # out-of-focus, then most cellular first. Then number them.
+    # Sortér, så det inden for hvert billede er ROI-felter først, felter i fokus
+    # før dem ude af fokus, og så dem med mest materiale først. Til sidst
+    # nummererer vi dem.
     ordered = df.sort_values(
         ["image", "is_roi", "in_focus", "cellularity"],
         ascending=[True, False, False, False],

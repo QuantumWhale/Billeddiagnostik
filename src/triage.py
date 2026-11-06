@@ -1,39 +1,41 @@
 """
 
-Rule-based triage scoring for Case 2 (sample suitability).
+Regelbaseret triagescoring til Case 2 (er prøven egnet?).
  
-Takes the tile-level features produced by features.py and turns them into a
-per-image triage decision: egnet (suitable) / suboptimal / uegnet (unsuitable).
+Tager de feltvise features, som features.py laver, og omsætter dem til en
+triage-beslutning pr. billede: egnet / suboptimal / uegnet.
  
-This is deliberately NOT a trained classifier - just thresholds applied to
-the CV features, so every decision can be explained in plain language
-("flagged uegnet because only 15% of tiles had usable cell material").
-That's the point of the "light AI" approach: transparent, inspectable.
+Det er med vilje IKKE en trænet klassifikator - bare tærskler lagt på
+CV-featurene, så hver eneste beslutning kan forklares i almindeligt sprog
+("markeret uegnet, fordi kun 15 % af felterne havde brugbart cellemateriale").
+Det er hele pointen med "light AI"-tilgangen: den er gennemsigtig, og man kan
+selv gå ind og se efter.
  
-Two-step logic:
-1. TILE level - each tile is judged in order:
-     a) enough cellular material?        (else: fails on C)
-     b) if so, is it in focus?           (else: fails on B)
-     c) if so, is the background clean?  (else: fails on D)
-   Focus and debris are only assessed on tiles that have material. An empty
-   tile is simply empty - calling it "out of focus" is meaningless (a blank
-   tile always scores ~0 on any focus measure) and would mislead the review.
-2. IMAGE level - the share of usable tiles decides the bucket.
+To-trins logik:
+1. FELT-niveau - hvert felt vurderes i rækkefølge:
+     a) nok cellemateriale?          (ellers: fejler på C)
+     b) hvis ja, er det i fokus?     (ellers: fejler på B)
+     c) hvis ja, er baggrunden ren?  (ellers: fejler på D)
+   Fokus og debris vurderes kun på felter, der har materiale. Et tomt felt er
+   bare tomt, og at kalde det "ude af fokus" giver ingen mening (et blankt felt
+   scorer altid ~0 på ethvert fokusmål) og ville bare forvirre gennemgangen.
+2. BILLED-niveau - andelen af brugbare felter afgør, hvilken kategori billedet havner i.
  
-Image-level thresholds follow the Bethesda System's adequacy logic:
-  - a specimen with >75% of cells obscured is "unsatisfactory"
-  - 50-75% obscured is reported as "satisfactory but partially obscured"
-So: <25% usable -> uegnet, 25-50% -> suboptimal, >=50% -> egnet.
-Caveat: Bethesda counts the fraction of *cells* obscured; we use the
-fraction of *tile area* that is usable as a proxy. Also, CRIC images are
-single microscope fields, not whole slides - in a real deployment these
-per-field scores would be aggregated across the whole preparation.
+Tærsklerne på billedniveau følger Bethesda-systemets logik for egnethed:
+  - en prøve, hvor >75 % af cellerne er skjult, er "unsatisfactory"
+  - 50-75 % skjult rapporteres som "satisfactory but partially obscured"
+Altså: <25 % brugbart -> uegnet, 25-50 % -> suboptimal, >=50 % -> egnet.
+Forbehold: Bethesda tæller andelen af *celler*, der er skjult, mens vi bruger
+andelen af *feltareal*, der er brugbart, som proxy. Derudover er
+CRIC-billederne enkelte synsfelter fra mikroskopet og ikke hele glas, så i en
+rigtig implementering skulle de her scorer pr. synsfelt samles op over hele
+præparatet.
  
-The TILE_* thresholds are placeholders to calibrate on real CRIC images:
-Laplacian variance depends on resolution and noise, and the debris scale
-depends on staining. Use the review app to see what they flag and adjust.
+TILE_*-tærsklerne er pladsholdere, der skal kalibreres på rigtige CRIC-billeder:
+Laplace-variansen afhænger af opløsning og støj, og debris-skalaen afhænger af
+farvningen. Brug gennemgangsappen til at se, hvad de markerer, og justér så.
  
-Usage:
+Brug:
     python src/triage.py
     python src/triage.py --input data/processed/features.csv --output data/processed/triage_results.csv
 """
@@ -43,15 +45,15 @@ from pathlib import Path
  
 import pandas as pd
  
-# --- Tile-level thresholds (CALIBRATE) --------------------------------------
-TILE_CELLULARITY_MIN = 0.05   # >=5% of the tile is stained material
-TILE_BLUR_MIN = 50.0          # Laplacian variance below this = out of focus (judged on cellular tiles only)
-TILE_DEBRIS_MAX = 12.0        # background grayscale std above this = too much debris (cellular tiles only)
+# --- Tærskler på feltniveau (CALIBRATE) -------------------------------------
+TILE_CELLULARITY_MIN = 0.05   # >=5 % af feltet er farvet materiale
+TILE_BLUR_MIN = 50.0          # Laplace-varians under det her = ude af fokus (vurderes kun på felter med celler)
+TILE_DEBRIS_MAX = 12.0        # gråtone-std i baggrunden over det her = for meget debris (kun felter med celler)
  
-# --- Image-level thresholds (Bethesda-aligned) --------------------------------
-IMAGE_SUITABLE_MIN = 0.50     # >=50% usable tiles -> egnet
-IMAGE_UNSUITABLE_MAX = 0.25   # <25% usable tiles  -> uegnet  (i.e. >75% not usable)
-# 25-50% -> suboptimal
+# --- Tærskler på billedniveau (følger Bethesda) -------------------------------
+IMAGE_SUITABLE_MIN = 0.50     # >=50 % brugbare felter -> egnet
+IMAGE_UNSUITABLE_MAX = 0.25   # <25 % brugbare felter -> uegnet  (dvs. >75 % ikke brugbare)
+# 25-50 % -> suboptimal
  
 REQUIRED_COLUMNS = {"image", "row", "col", "cellularity", "blur_score", "debris_score"}
  
@@ -71,14 +73,14 @@ def classify_tiles(
     debris_max: float = TILE_DEBRIS_MAX,
 ) -> pd.DataFrame:
     """
-    Add per-tile judgement columns:
-      has_cells   - passed the cellularity check
-      in_focus    - passed the blur check   (only meaningful where has_cells)
-      is_clean    - passed the debris check (only meaningful where has_cells)
-      tile_usable - all three
-      reasons     - which checks failed, as letters: C = cellularity,
-                    B = blur, D = debris. B/D are only reported when the
-                    tile has cells, since they're undefined otherwise.
+    Tilføjer kolonner med vurderingen af hvert felt:
+      has_cells   - har bestået cellularitets-tjekket
+      in_focus    - har bestået fokus-tjekket  (giver kun mening, hvor has_cells)
+      is_clean    - har bestået debris-tjekket (giver kun mening, hvor has_cells)
+      tile_usable - alle tre
+      reasons     - hvilke tjek der fejlede, som bogstaver: C = cellularitet,
+                    B = blur (uskarphed), D = debris. B/D rapporteres kun,
+                    når feltet har celler, da de ellers ikke er defineret.
     """
     df = df.copy()
     df["has_cells"] = df["cellularity"] >= cellularity_min
@@ -102,10 +104,11 @@ def classify_tiles(
  
 def aggregate_image_scores(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Collapse tile rows into one row per image.
+    Slår feltrækkerne sammen til én række pr. billede.
  
-    Focus and debris means are taken over CELLULAR tiles only - averaging in
-    empty tiles would drag focus down and say nothing about the sample.
+    Gennemsnittene for fokus og debris tages kun over felter MED CELLER - hvis
+    man tog de tomme felter med, ville de trække fokus ned uden at sige noget
+    om selve prøven.
     """
     cellular = df[df["has_cells"]]
     per_image = df.groupby("image").agg(
@@ -118,7 +121,7 @@ def aggregate_image_scores(df: pd.DataFrame) -> pd.DataFrame:
         mean_blur_cellular=("blur_score", "mean"),
         mean_debris_cellular=("debris_score", "mean"),
     )
-    per_image = per_image.join(cellular_stats)  # NaN where an image has no cellular tiles
+    per_image = per_image.join(cellular_stats)  # NaN, hvis et billede ikke har nogen felter med celler
     per_image["pct_cellular_tiles"] = per_image["cellular_tiles"] / per_image["total_tiles"]
     per_image["pct_usable_tiles"] = per_image["usable_tiles"] / per_image["total_tiles"]
     return per_image.reset_index()
@@ -129,7 +132,7 @@ def classify_images(
     suitable_min: float = IMAGE_SUITABLE_MIN,
     unsuitable_max: float = IMAGE_UNSUITABLE_MAX,
 ) -> pd.DataFrame:
-    """Add a 'triage' column: 'egnet' / 'suboptimal' / 'uegnet', from pct_usable_tiles."""
+    """Tilføjer en 'triage'-kolonne: 'egnet' / 'suboptimal' / 'uegnet', ud fra pct_usable_tiles."""
     df = image_df.copy()
  
     def _label(pct_usable: float) -> str:
@@ -153,13 +156,14 @@ DEFAULT_LABELS_PATH = Path("data/processed/manual_labels.csv")
  
 def attach_human_eval(image_df: pd.DataFrame, labels_path: Path = DEFAULT_LABELS_PATH) -> pd.DataFrame:
     """
-    Add 'human_eval' and 'human_eval_at' columns from the manual labels the
-    review app saves (data/processed/manual_labels.csv), plus 'agrees'
-    (True/False where both verdicts exist, blank otherwise).
+    Tilføjer kolonnerne 'human_eval' og 'human_eval_at' ud fra de manuelle
+    labels, som gennemgangsappen gemmer (data/processed/manual_labels.csv), og
+    derudover 'agrees' (True/False, hvor begge vurderinger findes, ellers tom).
  
-    manual_labels.csv is the durable record: triage_results.csv is rebuilt
-    from scratch on every run of this script, so human judgements are kept
-    separately and re-attached here. Images not yet reviewed get blanks.
+    Husk at det er manual_labels.csv, der er den varige log: triage_results.csv
+    bygges forfra, hver gang scriptet her køres, så de menneskelige vurderinger
+    gemmes for sig og bliver sat på igen her. Billeder, der ikke er vurderet
+    endnu, får tomme værdier.
     """
     df = image_df.drop(columns=["human_eval", "human_eval_at", "agrees"], errors="ignore")
     if not labels_path.exists():
