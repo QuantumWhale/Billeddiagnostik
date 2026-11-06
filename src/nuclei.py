@@ -4,7 +4,7 @@ Kernebaseret lokalisering til Case 1 ("hvor er der noget at kigge på").
 I stedet for at lægge et gitter ned over billedet finder vi her selve kernerne
 og samler dem, der ligger tæt på hinanden, i klynger, fordi det er de områder,
 en patolog rent faktisk ville gå hen og kigge på. Der bliver ikke klassificeret
-noget: en kerne er bare en mørk, farvet og nogenlunde rund klat af en realistisk
+noget: En kerne er bare en mørk, farvet og nogenlunde rund klat af en realistisk
 størrelse, og hvert trin er en simpel regel, så man altid kan forklare, hvorfor
 en given kerne er blevet fundet.
  
@@ -120,6 +120,7 @@ def _describe_component(component_mask: np.ndarray, x_off: int, y_off: int) -> d
  
 def _split_clump(clump_mask: np.ndarray) -> list[np.ndarray]:
     """
+    NB: Claude har hjulpet mig en del her:
     Deler en stor klat op i mindre klatter med en watershed på distance-transformen.
     Returnerer en liste af binære masker (samme form som clump_mask), én per segment.
     """
